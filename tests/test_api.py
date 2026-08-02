@@ -1,0 +1,48 @@
+def test_put_then_get_round_trips(client):
+    put_resp = client.put("/keys/foo", json={"value": "bar"})
+    assert put_resp.status_code == 200
+    assert put_resp.json() == {"key": "foo", "value": "bar"}
+
+    get_resp = client.get("/keys/foo")
+    assert get_resp.status_code == 200
+    assert get_resp.json() == {"key": "foo", "value": "bar"}
+
+
+def test_get_missing_key_returns_404(client):
+    resp = client.get("/keys/missing")
+    assert resp.status_code == 404
+
+
+def test_put_overwrites_existing_value(client):
+    client.put("/keys/foo", json={"value": "bar"})
+    resp = client.put("/keys/foo", json={"value": "baz"})
+    assert resp.status_code == 200
+    assert client.get("/keys/foo").json()["value"] == "baz"
+
+
+def test_delete_existing_key_returns_200(client):
+    client.put("/keys/foo", json={"value": "bar"})
+    resp = client.delete("/keys/foo")
+    assert resp.status_code == 200
+    assert resp.json() == {"key": "foo", "deleted": True}
+    assert client.get("/keys/foo").status_code == 404
+
+
+def test_delete_missing_key_returns_404(client):
+    resp = client.delete("/keys/missing")
+    assert resp.status_code == 404
+
+
+def test_healthz(client):
+    resp = client.get("/healthz")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["node_id"] == "test-node"
+
+
+def test_arbitrary_json_value_round_trips(client):
+    payload = {"nested": {"list": [1, 2, 3]}, "flag": True, "n": None}
+    client.put("/keys/complex", json={"value": payload})
+    resp = client.get("/keys/complex")
+    assert resp.json()["value"] == payload
