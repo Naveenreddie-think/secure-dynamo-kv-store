@@ -1,0 +1,17 @@
+{
+  "tok_demo_admin": {
+    "id": "demo-admin",
+    "namespaces": {
+      "default": ["read", "write", "delete"],
+      "orders": ["read", "write", "delete"],
+      "inventory": ["read", "write", "delete"]
+    }
+  },
+  "tok_demo_readonly": {
+    "id": "demo-readonly",
+    "namespaces": {
+      "default": ["read"],
+      "orders": ["read"]
+    }
+  }
+}

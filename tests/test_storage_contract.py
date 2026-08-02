@@ -1,11 +1,13 @@
 """Behavioral contract every StorageBackend implementation must satisfy.
 
-Parametrized so MemoryStorage and SqliteStorage are held to identical
-behavior -- if a test only passes for one backend, the interface is leaking
-implementation details.
+Parametrized so MemoryStorage, SqliteStorage, and EncryptedStorage are held
+to identical behavior -- if a test only passes for one backend, the
+interface is leaking implementation details.
 """
 import pytest
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from dynamokv.crypto import EncryptedStorage
 from dynamokv.storage.memory import MemoryStorage
 from dynamokv.storage.sqlite import SqliteStorage
 
@@ -18,7 +20,12 @@ def make_sqlite_storage(tmp_path):
     return SqliteStorage(str(tmp_path / "test.db"))
 
 
-BACKEND_FACTORIES = [make_memory_storage, make_sqlite_storage]
+def make_encrypted_storage(tmp_path):
+    inner = SqliteStorage(str(tmp_path / "encrypted.db"))
+    return EncryptedStorage(inner, AESGCM.generate_key(bit_length=256))
+
+
+BACKEND_FACTORIES = [make_memory_storage, make_sqlite_storage, make_encrypted_storage]
 
 
 @pytest.fixture(params=BACKEND_FACTORIES)

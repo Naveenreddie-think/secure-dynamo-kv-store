@@ -7,10 +7,18 @@ services:
       DB_PATH: data/node-1.db
       CLUSTER_NODES: node-1,node-2,node-3
       PORT: "8000"
+      INTERNAL_PORT: "8443"
+      TLS_CA_CERT: /app/certs/ca.crt
+      TLS_NODE_CERT: /app/certs/node/node-1.crt
+      TLS_NODE_KEY: /app/certs/node/node-1.key
+      AUTH_TOKENS_FILE: /app/auth_tokens.json
     ports:
       - "8001:8000"
     volumes:
       - node1-data:/app/data
+      - ./certs/ca.crt:/app/certs/ca.crt:ro
+      - ./certs/node-1:/app/certs/node:ro
+      - ./auth_tokens.json:/app/auth_tokens.json:ro
 
   node-2:
     build: .
@@ -20,10 +28,18 @@ services:
       DB_PATH: data/node-2.db
       CLUSTER_NODES: node-1,node-2,node-3
       PORT: "8000"
+      INTERNAL_PORT: "8443"
+      TLS_CA_CERT: /app/certs/ca.crt
+      TLS_NODE_CERT: /app/certs/node/node-2.crt
+      TLS_NODE_KEY: /app/certs/node/node-2.key
+      AUTH_TOKENS_FILE: /app/auth_tokens.json
     ports:
       - "8002:8000"
     volumes:
       - node2-data:/app/data
+      - ./certs/ca.crt:/app/certs/ca.crt:ro
+      - ./certs/node-2:/app/certs/node:ro
+      - ./auth_tokens.json:/app/auth_tokens.json:ro
 
   node-3:
     build: .
@@ -33,10 +49,18 @@ services:
       DB_PATH: data/node-3.db
       CLUSTER_NODES: node-1,node-2,node-3
       PORT: "8000"
+      INTERNAL_PORT: "8443"
+      TLS_CA_CERT: /app/certs/ca.crt
+      TLS_NODE_CERT: /app/certs/node/node-3.crt
+      TLS_NODE_KEY: /app/certs/node/node-3.key
+      AUTH_TOKENS_FILE: /app/auth_tokens.json
     ports:
       - "8003:8000"
     volumes:
       - node3-data:/app/data
+      - ./certs/ca.crt:/app/certs/ca.crt:ro
+      - ./certs/node-3:/app/certs/node:ro
+      - ./auth_tokens.json:/app/auth_tokens.json:ro
 
 volumes:
   node1-data:

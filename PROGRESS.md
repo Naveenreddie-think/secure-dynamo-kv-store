@@ -407,3 +407,112 @@ beyond what a single hint flush provides, and dynamic cluster membership
 (nodes joining/leaving the roster at runtime) — gossip here only tracks
 liveness within the static `CLUSTER_NODES` roster, it doesn't grow or
 shrink it.
+
+## Phase 6 — Security layer (done)
+
+Built all four mechanisms PLAN.md asks for — mTLS between nodes, AES-256
+encryption at rest, token-based client auth with per-namespace ACLs, and
+audit logging — and proved each works functionally. Phase 7 (adversarial
+testing) is next; this phase deliberately built the mechanisms, not the
+red-team suite that will try to break them.
+
+**What was built:**
+- `crypto.py` — `EncryptedStorage`: wraps any `StorageBackend` with
+  AES-256-GCM (authenticated encryption), fresh random nonce per write,
+  `{"nonce","ciphertext"}` envelope. Satisfies the exact same `StorageBackend`
+  Protocol untouched across all 6 phases now — slotted straight into the
+  existing `test_storage_contract.py` parametrized suite as a third backend.
+  `load_or_create_encryption_key()` generates a 256-bit key once per node on
+  first boot and persists it to `data/{node_id}.key` — one key per node
+  (never shared cluster-wide, since no node ever decrypts another node's
+  disk), derived from `DB_PATH`'s directory with no new env var, mirroring
+  how the hint store's path is already derived rather than configured.
+- `auth.py`/`audit.py` — `get_auth_context` dependency (bearer token →
+  namespace/verb permissions, `key.split(":", 1)[0]` namespace convention,
+  no default/bypass token) added only to the public `/keys/{key}` routes;
+  `AuditLogMiddleware` logs every public request — allowed or denied — as
+  one JSON-lines entry to `data/{node_id}.audit.log`, capturing the token's
+  *id*, never the raw token itself.
+- `api/routes.py` split into `public_router` (client-facing, token-gated)
+  and `internal_router` (node-to-node, mTLS-gated instead) — `create_app()`
+  still includes both on one app so every existing multi-node test fixture
+  (`test_node_quorum.py` etc.) needed zero changes.
+- `run.py` (new production entrypoint) — runs two independent
+  `uvicorn.Server` instances concurrently in one process via
+  `asyncio.gather`: the public app on `PORT` (server-only TLS, no client
+  cert required) and the internal app on `INTERNAL_PORT` (`8443`,
+  `ssl_cert_reqs=CERT_REQUIRED` against the cluster CA). The internal port
+  is never published to the Docker host, so it's unreachable from outside
+  the compose network by construction, not just by the handshake.
+- `scripts/gen_certs.py` — generates a self-signed CA and per-node
+  certificates using the `cryptography` library directly (no `openssl` CLI
+  dependency), signature verified independently after generation.
+
+**Key decisions:**
+- **Two ports, not one.** A single mTLS-required listener would have forced
+  real clients to present a cluster certificate just to connect, on top of
+  their bearer token. Researched first, not assumed: standard ASGI/uvicorn
+  don't expose the negotiated peer certificate to the application layer (no
+  `client_cert` in `scope`), so "mTLS only on `/internal/*`, optional
+  elsewhere, same port" isn't a reliable option — confirmed via uvicorn's
+  own open issues on the subject, not guessed.
+- **Auth defaults to disabled, audit log defaults to off, unless a test
+  explicitly opts in** — `create_app()` gained `auth_tokens`/`audit_log_path`
+  params following the exact `storage is None` production-mode-detection
+  pattern already used for `cluster_nodes`/`n`/`r`/`w`. This is what kept
+  every one of the ~85 pre-Phase-6 tests passing with zero modification —
+  the same discipline Phase 5 used to gate the gossip thread.
+- **A genuine `httpx` bug found and worked around, not just a config typo:**
+  `httpx.Client(cert=(...), verify="<ca path>")` looked correct and passed
+  code review, but silently dropped the client certificate. Traced
+  `httpx.create_ssl_context()`'s source directly: the string-`verify`
+  branch returns immediately with `ssl.create_default_context(cafile=...)`,
+  before the function ever reaches the code that would call
+  `ctx.load_cert_chain()` for `cert`. Confirmed by reproducing the exact
+  failure with a hand-built `ssl.SSLContext` using httpx's own
+  `create_ssl_context()` output against a raw socket (still failed), then
+  confirming a manually-built context with both `load_verify_locations()`
+  and `load_cert_chain()` succeeded. Fixed by building the `SSLContext`
+  directly and passing it as `verify=<SSLContext>` — which is also, it
+  turns out, exactly what httpx's own deprecation warnings on `cert=` and
+  string `verify=` already recommend. Every internal call was returning 503
+  (quorum unreachable) until this was found; the fix was one function.
+- Wrapped only `SqliteStorage` instances (main store + hint store) in
+  `EncryptedStorage`; `MemoryStorage` (tests only) stays unwrapped — "at
+  rest" means on-disk exposure, encrypting RAM buys nothing.
+
+**Test results:** 108/108 passing (`pytest`) — all 85 pre-Phase-6 tests
+unmodified. New: `test_storage_contract.py` gained a third parametrized
+backend (`EncryptedStorage`); `test_storage_encrypted.py` (4 cases —
+raw SQLite bytes provably don't contain the plaintext value, wrong key
+fails to decrypt, key persistence and per-path distinctness);
+`test_auth.py` (9 cases — 401/403/200 paths, default-namespace handling,
+`/healthz` unauthenticated, auth-disabled-when-not-configured);
+`test_audit_log.py` (3 cases — allowed and denied entries logged
+correctly, raw token never appears in the log file).
+
+Manual Docker Compose smoke test (3 real containers, real mTLS, real
+encrypted SQLite files) — every check below passed only *after* finding
+and fixing the httpx bug above, since every internal call failed with it in
+place: valid token + correct namespace → 200; missing/wrong/unknown token →
+401; wrong namespace or verb → 403; write via `node-1` replicates correctly
+to `node-2`/`node-3` over mTLS; internal port genuinely rejects a
+connection presenting no client certificate (`ReadError`/broken pipe at the
+TLS layer, confirmed as the TLS 1.3-deferred-certificate-check behavior
+Python's `ssl` module documents, not an application-level rejection) and
+accepts one signed by the cluster CA; stopping `node-3` and writing through
+`node-1` still succeeds via the remaining quorum with mTLS on, proving the
+transport change didn't silently break replication; `data/node-1.audit.log`
+showed both allowed and denied entries with no raw token ever present;
+`data/node-1.db`'s raw `value` column held a `{"nonce","ciphertext"}`
+envelope, not the literal stored value.
+
+**Deferred to later phases:** the adversarial red-team suite this phase's
+mechanisms exist to be tested against (Phase 7) · DynamoDB benchmarking
+(Phase 8) · versioned routes, structured logging, `/metrics`, README/CI
+(Phase 9) · dashboard (Phase 10). Not attempted in this phase, by design:
+certificate rotation (self-signed CA, ~10yr validity, no rotation story —
+matches PLAN.md's own "fine for a student project"), token revocation
+beyond editing the JSON file and restarting, and any audit log
+rotation/retention policy (Phase 9's structured-logging territory, not this
+narrow purpose-built log).

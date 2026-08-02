@@ -32,3 +32,17 @@ if W + R <= N:
 # believed-down by default -- comfortably inside PLAN.md's 60s test window.
 GOSSIP_INTERVAL_SECONDS = float(os.environ.get("GOSSIP_INTERVAL_SECONDS", "2.0"))
 GOSSIP_FAILURE_TIMEOUT_MULTIPLIER = float(os.environ.get("GOSSIP_FAILURE_TIMEOUT_MULTIPLIER", "3"))
+
+# mTLS: node-to-node traffic moves to its own port requiring a client
+# certificate signed by the cluster CA. The public client-facing port
+# (PORT, above) stays server-only TLS -- no client cert required, clients
+# authenticate with a bearer token instead (AUTH_TOKENS_FILE, below).
+INTERNAL_PORT = int(os.environ.get("INTERNAL_PORT", "8443"))
+TLS_CA_CERT = os.environ.get("TLS_CA_CERT", "certs/ca.crt")
+TLS_NODE_CERT = os.environ.get("TLS_NODE_CERT", "certs/node/node.crt")
+TLS_NODE_KEY = os.environ.get("TLS_NODE_KEY", "certs/node/node.key")
+
+# Client auth: a JSON file mapping bearer tokens to a client id and their
+# granted per-namespace permissions. No default/bypass token -- an
+# unrecognized or missing token is always denied.
+AUTH_TOKENS_FILE = os.environ.get("AUTH_TOKENS_FILE", "")
