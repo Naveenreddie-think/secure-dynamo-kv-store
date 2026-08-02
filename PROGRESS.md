@@ -293,3 +293,117 @@ handoff, stale-replica repair (Phase 5) · mTLS/AES/auth/ACLs/audit log
 (Phase 6) · adversarial testing (Phase 7) · DynamoDB benchmarking (Phase 8)
 · versioned routes, structured logging, `/metrics`, README/CI (Phase 9) ·
 dashboard (Phase 10).
+
+## Phase 5 — Gossip-based failure detection + hinted handoff (done)
+
+Closed the exact gap Phase 3 named and Phase 4 confirmed: a node that
+missed a write while down used to stay stale indefinitely. Nodes now
+maintain a liveness view of the cluster via periodic gossip, and a write
+whose target replica is down gets handed to a spare "neighbor" node as a
+hint, delivered once gossip reports the target is back.
+
+**What was built:**
+- `gossip.py` — `GossipState`: per-node heartbeat counter + locally-stamped
+  timestamp. Only integer counters ever cross the wire (`to_wire`); a
+  timestamp is only ever set by the node doing the observing
+  (`merge_wire`), never trusted from a peer — sidesteps clock skew across
+  containers entirely. A peer never gossiped about defaults to believed
+  *up* until first mentioned, and a node can never mark itself down.
+- `hint_store.py` — `HintStore`: one blob per *intended recipient* (not per
+  holder) in a dedicated `StorageBackend`, so two different down nodes
+  parking hints on the same neighbor never collide. Reuses `reconcile()`
+  verbatim to compact repeated writes to the same key during one outage.
+- `node.py` — `gossip_round()` (tick → push-pull with one random peer →
+  merge → flush any hints for now-live targets) and `handle_gossip()`.
+  `put()` now partitions its preference list by liveness: a presumed-down
+  target's write goes straight to a hint instead of a doomed attempt
+  (proactive path); a live attempt that fails right now falls back to the
+  same hint mechanism reactively. A hint is created via `_deliver_hint()`,
+  which — this took a real bug to get right (see below) — must carry the
+  hint's *target* separately from its *holder*.
+- `api/routes.py`/`models.py` — new internal-only `POST /internal/gossip`
+  (push-pull heartbeat exchange) and `PUT /internal/hints/{key}` (accepts a
+  hint on behalf of a named target). Hint *delivery* needed no new route at
+  all — it reuses the existing `/internal/keys/{key}` PUT verbatim; from
+  the recovered node's side, a handed-off write is indistinguishable from
+  an ordinary replica write.
+- `gossip_worker.py` — a small `threading.Thread` loop calling
+  `Node.gossip_round()` on a fixed interval, with clean `start()`/`stop()`.
+- `main.py` — a new `lifespan` context manager starts/stops the
+  `GossipWorker`, gated so it only ever runs when a real ASGI server drives
+  the app.
+
+**Key decisions:**
+- **A stored hint never counts toward the write quorum.** It's created
+  as a side effect inside the same exception path `_quorum_op` already
+  discards failures through — architecturally incapable of counting. This
+  keeps the `R+W>N` guarantee Phase 4's conflict-freedom proof leans on
+  completely untouched.
+- **Hints persist in a second, dedicated `StorageBackend` instance**
+  (`{DB_PATH}.hints` in production), never sharing a table with real
+  application data — a client PUTting a key that happened to match an
+  internal naming scheme could otherwise silently collide with hint
+  bookkeeping.
+- **The gossip thread is lifespan-gated, not construction-gated.**
+  Verified directly: `main.py`'s `app = create_app()` runs at *module
+  import time*, and `conftest.py` imports `create_app` from `dynamokv.main`
+  — so every single pytest run already constructs one production-mode
+  `Node` as an import side effect. Confirmed empirically (see Test results)
+  that gating on `production_mode` alone would have leaked a live
+  background thread into every test run in this repo, not just Phase 5's
+  own tests.
+- **Fallback tries exactly one extra ring candidate.** Matches PLAN.md's
+  singular "a neighbor" and its single-node-down test scenario. With a
+  cluster no bigger than N, there's no spare node at all — `hint_holder` is
+  `None` and the replica slot just doesn't count that round, falling back
+  to Phase 3's original behavior. No crash, no further search.
+- **A real bug found while implementing, not just during design review:**
+  the first draft of `_deliver_hint` only took `hint_holder` (who to send
+  the hint to) and had no separate parameter for *who the hint is actually
+  for*. Every hint got mislabeled with the holder's own id as its target,
+  so nothing ever got delivered anywhere. Caught by the first hinted-handoff
+  test actually failing, not by inspection — fixed by adding
+  `target_node_id` as an explicit, distinct argument.
+- Hinted handoff covers `put()` only, not `delete()`, matching Phase 4's
+  precedent of keeping delete deliberately unsophisticated. `get()` is
+  untouched this phase — no proactive skip of presumed-down replicas on
+  reads, keeping the diff focused on what PLAN.md actually asked for.
+
+**Test results:** 85/85 passing (`pytest`) — all Phase 1-4 tests
+unmodified. New: `test_gossip.py` (10 cases — merge semantics, timeout
+correctness against an injected fake clock, self never marked down),
+`test_hint_store.py` (8 cases), `test_gossip_worker.py` (4 cases, real
+threads with short intervals — start/stop correctness, survives a raising
+round, idempotent start), `test_node_hinted_handoff.py` (5 cases on a
+4-node/N=3 cluster reusing `test_node_quorum.py`'s mounted-transport
+infrastructure — reactive hint creation on the correct holder, proactive
+skip proven by the presumed-down replica's local storage staying empty,
+gossip-gated flush via an injected clock, the no-spare-node edge case, and
+gossip propagating third-party liveness knowledge between two nodes that
+never talked to the dead one directly). Also directly verified, outside
+pytest, that importing `dynamokv.main` leaves zero background threads
+running, and that `with TestClient(app) as c:` correctly starts and then
+cleanly stops the gossip thread.
+
+Manual Docker Compose smoke test, matching PLAN.md's literal scenario:
+temporarily overrode `N=2/R=1/W=1` via a `docker-compose.override.yml`
+(deleted afterward) so the 3-node cluster would have a spare node to serve
+as hint-holder — the base `N=3` config has no room for one, since cluster
+size equals N. PUT `probe` via `node-1` (replicas: `node-1`/`node-3`,
+spare: `node-2`); stopped `node-3`; PUT a new value for `probe` (200, W=1
+met locally); waited the full 60 seconds PLAN.md specifies; confirmed via
+`node-2`'s raw hint-database file that a hint for `node-3` was holding
+exactly that write. Restarted `node-3`; within ~15s (a few gossip
+intervals), `node-3`'s raw data file showed the missed write had arrived,
+and `node-2`'s hint file was empty. Quorum GETs from all three nodes
+afterward agreed.
+
+**Deferred to later phases:** mTLS/AES/auth/ACLs/audit log (Phase 6) ·
+adversarial testing (Phase 7) · DynamoDB benchmarking (Phase 8) · versioned
+routes, structured logging, `/metrics`, README/CI (Phase 9) · dashboard
+(Phase 10). Not attempted in this phase, by design: reconciling a delete
+against a concurrent write (tombstones), anti-entropy/Merkle-tree repair
+beyond what a single hint flush provides, and dynamic cluster membership
+(nodes joining/leaving the roster at runtime) — gossip here only tracks
+liveness within the static `CLUSTER_NODES` roster, it doesn't grow or
+shrink it.

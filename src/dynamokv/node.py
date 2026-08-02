@@ -1,11 +1,16 @@
+import random
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
 from fastapi import HTTPException
 
+from dynamokv.gossip import GossipState
+from dynamokv.hint_store import HintStore
 from dynamokv.ring import HashRing
 from dynamokv.storage.base import StorageBackend
+from dynamokv.storage.memory import MemoryStorage
 from dynamokv.vector_clock import VectorClock, Version, reconcile
 
 
@@ -16,8 +21,7 @@ class Node:
     then fans the operation out concurrently to those N replicas (local
     storage for itself, an internal HTTP call for peers) and returns as
     soon as a write (W) or read (R) quorum of them succeed. A replica that
-    fails to respond simply doesn't count toward the threshold -- there is
-    no retry, hint, or repair here; that gap is Phase 5's job.
+    fails to respond simply doesn't count toward the threshold.
 
     Each key can hold multiple sibling versions -- concurrent writes the
     system hasn't been able to causally order relative to each other.
@@ -25,6 +29,15 @@ class Node:
     clocks: dominated versions are dropped, and if more than one truly
     concurrent version survives, that's a genuine conflict, surfaced to the
     caller rather than silently resolved.
+
+    A background gossip round (driven externally, e.g. by a GossipWorker --
+    Node itself never starts a thread) periodically exchanges heartbeat
+    counters with a random peer, maintaining a local liveness view. When a
+    write's target replica is presumed down (or fails live, right now),
+    the coordinator hands the write to one extra "neighbor" node -- a
+    hint -- instead of just dropping it, and that neighbor delivers it once
+    gossip reports the real target is back. A hint never counts toward the
+    write quorum; it's a pure availability side effect on failure.
     """
 
     def __init__(
@@ -37,6 +50,9 @@ class Node:
         n: int = 1,
         r: int = 1,
         w: int = 1,
+        hint_storage: Optional[StorageBackend] = None,
+        gossip_clock_fn: Callable[[], float] = time.monotonic,
+        gossip_failure_timeout: float = 6.0,
     ) -> None:
         self.node_id = node_id
         self._storage = storage
@@ -47,6 +63,11 @@ class Node:
         self.r = r
         self.w = w
         self._executor = ThreadPoolExecutor(max_workers=max(n * 4, 8))
+
+        self._gossip_clock_fn = gossip_clock_fn
+        self._gossip_failure_timeout = gossip_failure_timeout
+        self._gossip_state = GossipState(node_id, clock_fn=gossip_clock_fn)
+        self._hint_store = HintStore(hint_storage if hint_storage is not None else MemoryStorage())
 
     # -- local primitives: no ring lookup, no fan-out, no forwarding. These
     # are what every replica's internal endpoint calls, and what a quorum op
@@ -67,6 +88,9 @@ class Node:
 
     def exists_local(self, key: str) -> bool:
         return self._storage.exists(key)
+
+    def add_hint(self, target_node_id: str, key: str, version: Version) -> None:
+        self._hint_store.add(target_node_id, key, version)
 
     # -- quorum machinery
 
@@ -148,6 +172,77 @@ class Node:
                 merged = reconcile(merged, v)
         return merged
 
+    # -- gossip + hinted handoff
+
+    def _partition_by_liveness(self, prefs: List[str]) -> Tuple[List[str], List[str]]:
+        now = self._gossip_clock_fn()
+        live: List[str] = []
+        presumed_down: List[str] = []
+        for node_id in prefs:
+            if self._gossip_state.believed_down(node_id, now, self._gossip_failure_timeout):
+                presumed_down.append(node_id)
+            else:
+                live.append(node_id)
+        return live, presumed_down
+
+    def _deliver_hint(self, hint_holder: str, target_node_id: str, key: str, version: Version) -> None:
+        """Get `version` to `hint_holder`, to be held on behalf of
+        `target_node_id` (the actual down replica) until it recovers.
+        `hint_holder` and `target_node_id` are deliberately separate --
+        who's holding the hint is not who it's for."""
+        if hint_holder == self.node_id:
+            self._hint_store.add(target_node_id, key, version)
+            return
+        try:
+            base_url = self._peer_base_url(hint_holder)
+            self._http.put(
+                f"{base_url}/internal/hints/{key}",
+                json={"target": target_node_id, "value": version.value, "clock": version.clock.counters},
+            )
+        except (RuntimeError, httpx.HTTPError):
+            pass  # best-effort -- no further fallback candidate this phase
+
+    def _flush_hints_for(self, node_id: str) -> None:
+        pending = self._hint_store.pending_for(node_id)
+        if not pending:
+            return
+        base_url = self._peer_base_url(node_id)
+        for key, versions in pending.items():
+            for version in versions:
+                try:
+                    resp = self._http.put(
+                        f"{base_url}/internal/keys/{key}",
+                        json={"value": version.value, "clock": version.clock.counters},
+                    )
+                    if resp.status_code == 200:
+                        self._hint_store.clear_key(node_id, key)
+                except httpx.HTTPError:
+                    pass  # try again next gossip round
+
+    def handle_gossip(self, incoming_table: Dict[str, int]) -> Dict[str, int]:
+        self._gossip_state.merge_wire(incoming_table)
+        return self._gossip_state.to_wire()
+
+    def gossip_round(self) -> None:
+        self._gossip_state.tick()
+        if self._peers:
+            peer_id = random.choice(list(self._peers))
+            try:
+                base_url = self._peer_base_url(peer_id)
+                resp = self._http.post(
+                    f"{base_url}/internal/gossip",
+                    json={"sender": self.node_id, "table": self._gossip_state.to_wire()},
+                )
+                if resp.status_code == 200:
+                    self._gossip_state.merge_wire(resp.json()["table"])
+            except httpx.HTTPError:
+                pass  # that peer's counter just won't advance in our view
+
+        now = self._gossip_clock_fn()
+        for peer_id in self._peers:
+            if not self._gossip_state.believed_down(peer_id, now, self._gossip_failure_timeout):
+                self._flush_hints_for(peer_id)
+
     # -- public API, used by routes.py
 
     def get(self, key: str) -> Version:
@@ -170,8 +265,24 @@ class Node:
         new_clock = VectorClock.merge(v.clock for v in merged).incremented(self.node_id)
         new_version = Version(value=value, clock=new_clock)
 
+        hint_candidates = self._ring.get_preference_list(key, len(prefs) + 1)
+        hint_holder = next((nid for nid in hint_candidates if nid not in prefs), None)
+
+        live, presumed_down = self._partition_by_liveness(prefs)
+        if hint_holder is not None:
+            for down_id in presumed_down:
+                self._deliver_hint(hint_holder, down_id, key, new_version)
+
+        def guarded_put_op(node_id: str) -> bool:
+            try:
+                return self._put_op(key, new_version)(node_id)
+            except Exception:
+                if hint_holder is not None and node_id != hint_holder:
+                    self._deliver_hint(hint_holder, node_id, key, new_version)
+                raise
+
         write_threshold = min(self.w, len(prefs))
-        write_results = self._quorum_op(prefs, write_threshold, self._put_op(key, new_version))
+        write_results = self._quorum_op(live, write_threshold, guarded_put_op)
         if len(write_results) < write_threshold:
             raise HTTPException(status_code=503, detail=f"could not reach write quorum for key '{key}'")
         return new_version

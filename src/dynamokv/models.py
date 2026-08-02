@@ -36,3 +36,18 @@ class DeleteResponse(BaseModel):
 class HealthResponse(BaseModel):
     node_id: str
     status: str
+
+
+class GossipRequest(BaseModel):
+    sender: str
+    table: Dict[str, int]
+
+
+class GossipResponse(BaseModel):
+    table: Dict[str, int]
+
+
+class InternalHintRequest(BaseModel):
+    target: str
+    value: Any
+    clock: Dict[str, int]

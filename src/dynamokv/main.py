@@ -1,9 +1,11 @@
+from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
 
 from fastapi import FastAPI
 
 from dynamokv import config
 from dynamokv.api.routes import router
+from dynamokv.gossip_worker import GossipWorker
 from dynamokv.node import Node
 from dynamokv.ring import HashRing
 from dynamokv.storage.base import StorageBackend
@@ -17,8 +19,31 @@ def _build_storage_from_config() -> StorageBackend:
     return SqliteStorage(config.DB_PATH)
 
 
+def _build_hint_storage_from_config() -> StorageBackend:
+    """A second, dedicated backend for hints -- entirely separate from real
+    application data, so a client-chosen key can never collide with
+    internal hint bookkeeping."""
+    if config.STORAGE_BACKEND == "memory":
+        return MemoryStorage()
+    return SqliteStorage(f"{config.DB_PATH}.hints")
+
+
 def _cluster_nodes_from_config() -> List[str]:
     return [n.strip() for n in config.CLUSTER_NODES.split(",") if n.strip()]
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Starts the gossip background thread only when a real ASGI server
+    actually drives this app (uvicorn, or `with TestClient(app) as c:`) --
+    not merely when create_app() constructs it, which happens once at
+    module import time and again in every test that builds its own app."""
+    worker: Optional[GossipWorker] = app.state.gossip_worker
+    if worker is not None:
+        worker.start()
+    yield
+    if worker is not None:
+        worker.stop()
 
 
 def create_app(
@@ -39,7 +64,7 @@ def create_app(
     the environment, which won't contain their own node_id, and every call
     would try to forward to a nonexistent peer.
     """
-    app = FastAPI(title="dynamokv")
+    app = FastAPI(title="dynamokv", lifespan=lifespan)
     production_mode = storage is None
     resolved_storage = storage if storage is not None else _build_storage_from_config()
     resolved_node_id = node_id if node_id is not None else config.NODE_ID
@@ -54,6 +79,9 @@ def create_app(
     resolved_n = n if n is not None else (config.N if production_mode else 1)
     resolved_r = r if r is not None else (config.R if production_mode else 1)
     resolved_w = w if w is not None else (config.W if production_mode else 1)
+    resolved_gossip_failure_timeout = (
+        config.GOSSIP_INTERVAL_SECONDS * config.GOSSIP_FAILURE_TIMEOUT_MULTIPLIER if production_mode else 6.0
+    )
 
     ring = HashRing(nodes=resolved_cluster_nodes, virtual_nodes=config.VIRTUAL_NODES)
     peers: Dict[str, str] = {
@@ -62,7 +90,7 @@ def create_app(
         if nid != resolved_node_id
     }
 
-    app.state.node = Node(
+    node = Node(
         node_id=resolved_node_id,
         storage=resolved_storage,
         ring=ring,
@@ -70,6 +98,12 @@ def create_app(
         n=resolved_n,
         r=resolved_r,
         w=resolved_w,
+        hint_storage=_build_hint_storage_from_config() if production_mode else None,
+        gossip_failure_timeout=resolved_gossip_failure_timeout,
+    )
+    app.state.node = node
+    app.state.gossip_worker = (
+        GossipWorker(node, config.GOSSIP_INTERVAL_SECONDS) if production_mode and peers else None
     )
     app.include_router(router)
 

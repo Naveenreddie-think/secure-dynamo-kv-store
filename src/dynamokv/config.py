@@ -26,3 +26,9 @@ if W + R <= N:
         "guaranteed to overlap, so reads may miss the latest write.",
         stacklevel=1,
     )
+
+# Gossip: how often a node exchanges heartbeats with a random peer, and how
+# many missed intervals before that peer is presumed down. 6s to
+# believed-down by default -- comfortably inside PLAN.md's 60s test window.
+GOSSIP_INTERVAL_SECONDS = float(os.environ.get("GOSSIP_INTERVAL_SECONDS", "2.0"))
+GOSSIP_FAILURE_TIMEOUT_MULTIPLIER = float(os.environ.get("GOSSIP_FAILURE_TIMEOUT_MULTIPLIER", "3"))

@@ -2,7 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from dynamokv.models import (
     DeleteResponse,
+    GossipRequest,
+    GossipResponse,
     HealthResponse,
+    InternalHintRequest,
     InternalPutRequest,
     InternalVersionsResponse,
     KeyValueResponse,
@@ -71,3 +74,25 @@ def delete_key_local(key: str, node: Node = Depends(get_node)) -> DeleteResponse
     if not deleted:
         raise HTTPException(status_code=404, detail=f"key '{key}' not found")
     return DeleteResponse(key=key, deleted=True)
+
+
+# Gossip exchange and hint handoff -- also internal-only. A gossip round is
+# a single push-pull: the caller sends its table, the callee merges it and
+# hands back its own. Hint creation is how a coordinator gets a write to a
+# neighbor node when the real target is unreachable -- delivery back to the
+# real target, once it's live again, reuses the plain /internal/keys/{key}
+# PUT above; from the target's side a handed-off write looks identical to
+# an ordinary replica write.
+
+
+@router.post("/internal/gossip", response_model=GossipResponse, include_in_schema=False)
+def gossip(body: GossipRequest, node: Node = Depends(get_node)) -> GossipResponse:
+    table = node.handle_gossip(body.table)
+    return GossipResponse(table=table)
+
+
+@router.put("/internal/hints/{key}", include_in_schema=False)
+def put_hint(key: str, body: InternalHintRequest, node: Node = Depends(get_node)) -> dict:
+    version = Version(value=body.value, clock=VectorClock(body.clock))
+    node.add_hint(body.target, key, version)
+    return {"status": "ok"}
