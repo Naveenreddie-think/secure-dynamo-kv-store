@@ -1,0 +1,44 @@
+services:
+  node-1:
+    build: .
+    environment:
+      NODE_ID: node-1
+      STORAGE_BACKEND: sqlite
+      DB_PATH: data/node-1.db
+      CLUSTER_NODES: node-1,node-2,node-3
+      PORT: "8000"
+    ports:
+      - "8001:8000"
+    volumes:
+      - node1-data:/app/data
+
+  node-2:
+    build: .
+    environment:
+      NODE_ID: node-2
+      STORAGE_BACKEND: sqlite
+      DB_PATH: data/node-2.db
+      CLUSTER_NODES: node-1,node-2,node-3
+      PORT: "8000"
+    ports:
+      - "8002:8000"
+    volumes:
+      - node2-data:/app/data
+
+  node-3:
+    build: .
+    environment:
+      NODE_ID: node-3
+      STORAGE_BACKEND: sqlite
+      DB_PATH: data/node-3.db
+      CLUSTER_NODES: node-1,node-2,node-3
+      PORT: "8000"
+    ports:
+      - "8003:8000"
+    volumes:
+      - node3-data:/app/data
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
