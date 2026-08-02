@@ -55,18 +55,12 @@ def test_get_forwards_to_owning_peer():
     assert coordinator.get("some-key") == "bar"
 
 
-def test_get_missing_forwarded_key_returns_none():
+def test_get_missing_forwarded_key_raises_404():
     coordinator, peer_client, owner = _coordinator_for("missing-key")
 
-    assert coordinator.get("missing-key") is None
-
-
-def test_exists_forwards_to_owning_peer():
-    coordinator, peer_client, owner = _coordinator_for("some-key")
-    peer_client.put("/keys/some-key", json={"value": "bar"})
-
-    assert coordinator.exists("some-key") is True
-    assert coordinator.exists("does-not-exist") is False
+    with pytest.raises(Exception) as exc_info:
+        coordinator.get("missing-key")
+    assert getattr(exc_info.value, "status_code", None) == 404
 
 
 def test_delete_forwards_to_owning_peer():

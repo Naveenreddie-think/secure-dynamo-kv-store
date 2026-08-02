@@ -60,6 +60,31 @@ class HashRing:
             idx = 0
         return self._ring[self._sorted_hashes[idx]]
 
+    def get_preference_list(self, key: str, n: int) -> List[str]:
+        """The n distinct real nodes responsible for replicas of this key,
+        walking clockwise from the same starting point get_node uses (so
+        result[0] always equals get_node(key)). Returns fewer than n if the
+        cluster itself has fewer than n real nodes -- not an error."""
+        if not self._sorted_hashes:
+            raise RuntimeError("hash ring has no nodes")
+        target = min(n, len(self._nodes))
+        h = self._hash(key)
+        start = bisect.bisect_left(self._sorted_hashes, h)
+        if start == len(self._sorted_hashes):
+            start = 0
+
+        result: List[str] = []
+        seen: Set[str] = set()
+        total = len(self._sorted_hashes)
+        for i in range(total):
+            node_id = self._ring[self._sorted_hashes[(start + i) % total]]
+            if node_id not in seen:
+                seen.add(node_id)
+                result.append(node_id)
+                if len(result) == target:
+                    break
+        return result
+
     @property
     def nodes(self) -> Set[str]:
         return set(self._nodes)

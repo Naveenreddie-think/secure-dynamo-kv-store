@@ -25,16 +25,19 @@ def create_app(
     storage: Optional[StorageBackend] = None,
     node_id: Optional[str] = None,
     cluster_nodes: Optional[List[str]] = None,
+    n: Optional[int] = None,
+    r: Optional[int] = None,
+    w: Optional[int] = None,
 ) -> FastAPI:
-    """Build the app. Production wires storage AND cluster membership from
-    env vars; tests inject a MemoryStorage directly for isolation and speed,
-    which also defaults them to an isolated single-node cluster (no
-    forwarding) unless they explicitly opt into a multi-node cluster_nodes
-    list. That "storage is None means production" signal matters: without
-    it, tests that don't pass cluster_nodes would default to whatever
-    CLUSTER_NODES happens to be in the environment, which won't contain
-    their own node_id, and every call would try to forward to a nonexistent
-    peer.
+    """Build the app. Production wires storage, cluster membership, and N/R/W
+    from env vars; tests inject a MemoryStorage directly for isolation and
+    speed, which also defaults them to an isolated single-node cluster (no
+    forwarding, quorum-of-1) unless they explicitly opt into a multi-node
+    cluster_nodes list and/or explicit n/r/w. That "storage is None means
+    production" signal matters: without it, tests that don't pass
+    cluster_nodes would default to whatever CLUSTER_NODES happens to be in
+    the environment, which won't contain their own node_id, and every call
+    would try to forward to a nonexistent peer.
     """
     app = FastAPI(title="dynamokv")
     production_mode = storage is None
@@ -48,6 +51,10 @@ def create_app(
     else:
         resolved_cluster_nodes = [resolved_node_id]
 
+    resolved_n = n if n is not None else (config.N if production_mode else 1)
+    resolved_r = r if r is not None else (config.R if production_mode else 1)
+    resolved_w = w if w is not None else (config.W if production_mode else 1)
+
     ring = HashRing(nodes=resolved_cluster_nodes, virtual_nodes=config.VIRTUAL_NODES)
     peers: Dict[str, str] = {
         nid: f"http://{nid}:{config.PORT}"
@@ -56,7 +63,13 @@ def create_app(
     }
 
     app.state.node = Node(
-        node_id=resolved_node_id, storage=resolved_storage, ring=ring, peers=peers
+        node_id=resolved_node_id,
+        storage=resolved_storage,
+        ring=ring,
+        peers=peers,
+        n=resolved_n,
+        r=resolved_r,
+        w=resolved_w,
     )
     app.include_router(router)
 

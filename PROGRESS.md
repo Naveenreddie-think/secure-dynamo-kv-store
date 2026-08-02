@@ -116,3 +116,95 @@ vector clocks (Phase 4) · gossip-based failure detection, hinted handoff
 (Phase 7) · DynamoDB benchmarking (Phase 8) · versioned routes, 409/503
 polish, structured logging, `/metrics`, README/CI (Phase 9) · dashboard
 (Phase 10).
+
+## Phase 3 — Replication with quorum R/W (done)
+
+Generalized Phase 2's "who owns this key" into "who are this key's N
+replicas," and gave `Node` quorum-aware reads/writes that tolerate replica
+failure. Confirmed live on the 3-node Docker Compose cluster: killed one of
+three replicas, writes and reads both still succeeded via the remaining
+quorum — `PLAN.md`'s exact Phase 3 test criterion.
+
+**What was built:**
+- `ring.py` — `get_preference_list(key, n)`: walks the same starting point
+  as `get_node`, collecting up to `n` distinct real node owners (fewer,
+  not an error, if the cluster itself is smaller than `n`).
+- `node.py` — gained `get_local`/`put_local`/`delete_local`/`exists_local`
+  (unconditional local storage access, no ring lookup) plus quorum fan-out:
+  `get`/`put`/`delete` now compute the key's preference list, fan the
+  operation out concurrently via a `ThreadPoolExecutor` to all N replicas
+  (local call for itself, HTTP call to `/internal/keys/{key}` for peers),
+  and return as soon as a W (write) or R (read) threshold succeeds.
+  Un-met threshold raises `HTTPException(503)` — the same code Phase 2
+  established for "quorum/peer unavailable." `Node.exists()` (the Phase 2
+  peer-forwarding method) was removed — confirmed via grep it was unused
+  outside the old GET handler and its own tests.
+- `api/routes.py` — new internal-only routes (`/internal/keys/{key}`,
+  hidden from the OpenAPI schema) that touch local storage unconditionally.
+  These exist because replica writes going through the *public* route would
+  make every replica re-derive the preference list on arrival and
+  re-fan-out all over again — the public route is for client-facing
+  coordination, the internal one is for "just store your own copy." The
+  public GET handler also collapsed from two `Node` calls to one, since
+  quorum fan-out would otherwise multiply the double-call inefficiency
+  Phase 2 had already flagged and accepted.
+- `config.py`/`main.py` — `N`/`R`/`W` env vars (defaults 3/2/2, matching
+  `PLAN.md`'s own example), threaded into `Node`. A `warnings.warn(...)` at
+  startup if `W + R <= N` (breaks the read/write overlap guarantee) — no
+  logging framework, since structured logging is explicitly Phase 9 scope.
+
+**Key decisions:**
+- Fan-out stayed **sync + `ThreadPoolExecutor`**, not an async rewrite —
+  FastAPI already runs sync routes in its own threadpool, so this adds no
+  new concurrency model, just makes explicit what's already implicit; an
+  async rewrite would have touched every layer (routes, `Node`, test
+  infrastructure) for a phase whose actual ask was quorum logic, not an I/O
+  model change.
+- **"Presence beats absence"** read reconciliation: among the R collected
+  responses, any "found" wins over "not found." Not value-freshness
+  comparison (arbitrary among multiple *found* results — that's Phase 4's
+  vector clocks) — it fixes a real in-scope gap: a write can return success
+  once W replicas ack while the remaining N-W are still catching up, so a
+  concurrent read can otherwise see a nondeterministic found/not-found
+  split with zero node failures involved.
+- **Threshold clamping** (`min(configured_w_or_r, len(preference_list))`),
+  computed in `Node`. Without it, the existing single-node test fixture
+  (`W=2` configured, 1 real node) would be permanently unsatisfiable — this
+  is what kept `test_api.py`/`conftest.py` passing with zero changes.
+- Stale-replica repair (a node that missed a write while down stays stale
+  indefinitely) and multi-value conflict resolution are explicitly **not**
+  attempted here — those are Phase 5 (hinted handoff) and Phase 4 (vector
+  clocks) respectively. Confirmed this gap is real and stays masked by
+  design: since *every* node's public GET does quorum fan-out (not just a
+  designated coordinator), hitting the stale replica directly through its
+  public API still returns the correct value. Only the internal, local-only
+  endpoint (or inspecting the replica's raw DB) reveals it never actually
+  received the write.
+
+**Test results:** 42/42 passing (`pytest`) — all 34 Phase 1/2 tests
+unmodified except two obsolete `Node.exists()` assertions removed from
+`test_node_forwarding.py` (that method no longer exists); the rest of that
+file keeps passing unmodified since `Node`'s new `n=r=w=1` defaults
+degenerate to exactly Phase 2's single-owner-forward behavior. Plus 5 new
+`get_preference_list` cases in `test_ring.py`, and a new
+`test_node_quorum.py` covering: all 3 replicas up, 1 of 3 down (write+read
+still succeed), 2 of 3 down (both correctly 503), and a synthetic 5-node/N=3
+case proving a coordinator that isn't itself one of the key's 3 replicas
+still works correctly.
+
+Manual Docker Compose smoke test (3 real containers, `N=3`/`R=2`/`W=2`):
+confirmed a key PUT while all 3 were up is physically stored on all 3 (since
+cluster size equals N); `docker compose stop node-3`, PUT and GET via
+`node-1` both succeeded (200) via the remaining 2-node quorum; restarted
+`node-3` and confirmed via its raw SQLite file and its internal-only
+endpoint (both bypassing quorum) that it never actually received the write
+during its downtime — while its own *public* GET still returned the correct
+value, since it too fans out to the healthy replicas. This is precisely the
+gap Phase 5's hinted handoff exists to close.
+
+**Deferred to later phases:** vector clocks, multi-value conflict detection
+(Phase 4) · gossip-based failure detection, hinted handoff, stale-replica
+repair (Phase 5) · mTLS/AES/auth/ACLs/audit log (Phase 6) · adversarial
+testing (Phase 7) · DynamoDB benchmarking (Phase 8) · versioned routes,
+409 semantics, structured logging, `/metrics`, README/CI (Phase 9) ·
+dashboard (Phase 10).

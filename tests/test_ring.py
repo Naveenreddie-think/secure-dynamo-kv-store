@@ -72,3 +72,41 @@ def test_distribution_is_reasonably_balanced():
     mean = len(keys) / len(nodes)
     for n in nodes:
         assert counts[n] <= 2 * mean
+
+
+def test_preference_list_is_deterministic():
+    ring = HashRing(nodes=["node-1", "node-2", "node-3"])
+    key = "some-key"
+    assert ring.get_preference_list(key, 2) == ring.get_preference_list(key, 2)
+
+
+def test_preference_list_first_entry_matches_get_node():
+    ring = HashRing(nodes=["node-1", "node-2", "node-3", "node-4", "node-5"])
+    for k in _sample_keys(100):
+        assert ring.get_preference_list(k, 1)[0] == ring.get_node(k)
+
+
+def test_preference_list_returns_n_distinct_nodes_when_available():
+    nodes = [f"node-{i}" for i in range(5)]
+    ring = HashRing(nodes=nodes)
+    for k in _sample_keys(100):
+        prefs = ring.get_preference_list(k, 3)
+        assert len(prefs) == 3
+        assert len(set(prefs)) == 3
+        assert all(n in nodes for n in prefs)
+
+
+def test_preference_list_caps_at_cluster_size_without_erroring():
+    ring = HashRing(nodes=["node-1", "node-2"])
+    prefs = ring.get_preference_list("some-key", 5)
+    assert len(prefs) == 2
+    assert set(prefs) == {"node-1", "node-2"}
+
+
+def test_preference_list_raises_when_empty():
+    ring = HashRing()
+    try:
+        ring.get_preference_list("foo", 3)
+        assert False, "expected RuntimeError"
+    except RuntimeError:
+        pass
