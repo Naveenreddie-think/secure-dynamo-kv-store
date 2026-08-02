@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Dict, List
 
 from pydantic import BaseModel
 
@@ -10,6 +10,22 @@ class PutRequest(BaseModel):
 class KeyValueResponse(BaseModel):
     key: str
     value: Any
+    clock: Dict[str, int]
+
+
+class VersionOut(BaseModel):
+    value: Any
+    clock: Dict[str, int]
+
+
+class InternalPutRequest(BaseModel):
+    value: Any
+    clock: Dict[str, int]
+
+
+class InternalVersionsResponse(BaseModel):
+    key: str
+    versions: List[VersionOut]
 
 
 class DeleteResponse(BaseModel):

@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from dynamokv import config
 from dynamokv.main import create_app
 from dynamokv.storage.memory import MemoryStorage
+from dynamokv.vector_clock import VectorClock, Version
 
 
 class _RaisingTransport(httpx.BaseTransport):
@@ -114,7 +115,7 @@ def test_two_of_three_down_write_and_read_both_fail_503():
     assert put_resp.status_code == 503
 
     # seed node-1's own local copy directly to isolate the read-quorum check
-    apps["node-1"].state.node.put_local("foo", "bar")
+    apps["node-1"].state.node.put_local("foo", Version(value="bar", clock=VectorClock({"node-1": 1})))
     get_resp = clients["node-1"].get("/keys/foo")
     assert get_resp.status_code == 503
 

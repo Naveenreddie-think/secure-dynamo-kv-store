@@ -1,11 +1,29 @@
 def test_put_then_get_round_trips(client):
     put_resp = client.put("/keys/foo", json={"value": "bar"})
     assert put_resp.status_code == 200
-    assert put_resp.json() == {"key": "foo", "value": "bar"}
+    assert put_resp.json()["key"] == "foo"
+    assert put_resp.json()["value"] == "bar"
 
     get_resp = client.get("/keys/foo")
     assert get_resp.status_code == 200
-    assert get_resp.json() == {"key": "foo", "value": "bar"}
+    assert get_resp.json()["key"] == "foo"
+    assert get_resp.json()["value"] == "bar"
+
+
+def test_sequential_writes_never_spuriously_conflict(client):
+    clocks = []
+    for value in ("v1", "v2", "v3"):
+        resp = client.put("/keys/foo", json={"value": value})
+        assert resp.status_code == 200
+        clocks.append(resp.json()["clock"]["test-node"])
+
+    # each write's own clock entry strictly increases
+    assert clocks == sorted(clocks)
+    assert len(set(clocks)) == len(clocks)
+
+    get_resp = client.get("/keys/foo")
+    assert get_resp.status_code == 200
+    assert get_resp.json()["value"] == "v3"
 
 
 def test_get_missing_key_returns_404(client):

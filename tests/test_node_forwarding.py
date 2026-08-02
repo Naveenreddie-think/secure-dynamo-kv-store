@@ -52,7 +52,7 @@ def test_get_forwards_to_owning_peer():
     coordinator, peer_client, owner = _coordinator_for("some-key")
     peer_client.put("/keys/some-key", json={"value": "bar"})
 
-    assert coordinator.get("some-key") == "bar"
+    assert coordinator.get("some-key").value == "bar"
 
 
 def test_get_missing_forwarded_key_raises_404():
