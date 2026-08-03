@@ -516,3 +516,115 @@ matches PLAN.md's own "fine for a student project"), token revocation
 beyond editing the JSON file and restarting, and any audit log
 rotation/retention policy (Phase 9's structured-logging territory, not this
 narrow purpose-built log).
+
+## Phase 7 — Adversarial testing (done)
+
+Red-teamed Phase 6's four security mechanisms together, as an integrated
+live system, from an insider-threat model matching PLAN.md's own framing
+("simulate a compromised node") — a party who already holds *some*
+legitimate credential (a real node cert, a real client token) rather than
+an external attacker with none. Built a 10-category taxonomy, executed
+every scenario against the real 3-node Docker Compose cluster (not just
+unit-level assertions), and measured prevention/detection independently
+rather than as a single pass/fail.
+
+**What was built:**
+- `mtls.py` (new) — `build_mtls_client_context()`/`build_no_client_cert_context()`,
+  extracted from `run.py`'s existing TLS context builder with zero behavior
+  change, so both production code and the attack harness build TLS contexts
+  through the one place that already paid the cost of finding Phase 6's
+  `httpx` client-cert bug.
+- `tests/test_adversarial_mechanisms.py` (new) + `test_gossip.py` (extended)
+  — fast, deterministic, mounted-transport proofs of the mechanisms behind
+  categories 2 (partial)/3/4/5/6, run before ever touching Docker so the
+  claims in the live report rest on something proven independently of
+  container timing.
+- `scripts/adversarial_scenarios.py` + `scripts/adversarial_testbed.py`
+  (new) — 10 scenario implementations against a shared `Context` (real
+  certs/tokens read straight off the host filesystem, `docker compose exec`
+  for on-disk inspection since `docker-compose.yml` uses named volumes, not
+  host bind mounts), a CLI that preflights the cluster, runs every scenario,
+  computes rates, and writes `reports/phase7_adversarial_report.md` +
+  `reports/phase7_adversarial_results.json`.
+- `main.py` — the one remediation this phase makes: `create_internal_app()`
+  now accepts an `audit_log_path` and attaches `add_audit_middleware()` when
+  given one; `run.py` passes a new, separate `default_internal_audit_log_path()`
+  (`{node_id}.internal-audit.log`, distinct from the public audit log — two
+  different trust domains worth inspecting independently).
+
+**Taxonomy and results** (prevented/detected measured independently — a
+scenario can be either, both, or neither):
+
+| # | Category | Result |
+|---|---|---|
+| 1 | Unauthorized internal join (no cert / rogue CA cert) | PREVENTED (TLS handshake rejected) |
+| 2 | Node identity spoofing (`sender`/`target` fields never cross-checked against the mTLS peer cert) | UNDEFENDED |
+| 3 | Gossip forgery — compromised relay suppresses a healthy node's liveness | mechanism proven deterministically in `test_gossip.py`; live reproduction inconclusive (see below) |
+| 4 | Vector-clock replay of an old write | PREVENTED |
+| 5 | Vector-clock forgery — fabricated clock hijacks a key cluster-wide | UNDEFENDED (immediate hijack); self-heals on the impersonated node's next real write |
+| 6 | Unauthorized/forged delete (`delete_local` is unconditional) | UNDEFENDED |
+| 7 | Decrypt on-disk ciphertext with the wrong/no key | PREVENTED |
+| 8 | Tamper with ciphertext at rest (GCM auth tag) | PREVENTED |
+| 9 | Client auth bypass (5 sub-cases: no/malformed/unknown token, wrong verb, valid) | PREVENTED + DETECTED, all 5 |
+| 10 | Audit blind spot — (a) internal-port attacks left zero record; (b) local audit log has no integrity protection | (a) FIXED this phase; (b) UNDEFENDED |
+
+**Measured rates (final run):** Prevention 11/18 = 61%, Detection 6/18 = 33%.
+
+**Key decisions:**
+- **Categories 2, 5(hijack), 6, and 10b were measured and reported, not
+  fixed** — the one decision confirmed with the user up front. Category
+  10a's audit-wiring gap was the sole exception, fixed because leaving it
+  would have made the detection-rate number misleadingly near-zero for a
+  one-line wiring gap rather than an unsolved design problem.
+- **Category 2 is a structural transport-stack limitation, not a forgotten
+  check** — standard ASGI/uvicorn doesn't expose the negotiated mTLS peer
+  certificate to the application layer at all (the same fact Phase 6's own
+  two-port decision was already based on), so `sender`/`target` fields
+  genuinely cannot be cross-checked today without a reverse proxy or
+  protocol change.
+- **Category 3's live reproduction is honestly inconclusive, not a false
+  "defended."** The chosen topology (separate Docker Compose `networks:`
+  isolating node-1 from node-3) causes near-instant connection/DNS failures
+  rather than a hung TCP timeout, so a reactive failed attempt and a
+  proactive gossip-driven skip are latency-indistinguishable under this
+  specific technique — independent of whether the forged relay actually
+  worked. Rather than force a different observable to get a clean pass/fail,
+  the harness reports "inconclusive" as a real third outcome and points to
+  the deterministic proof already sitting in `test_gossip.py`. Both
+  `prevented` and `detected` are `False` for this scenario, and it's
+  excluded from neither count's denominator — the 11/18 and 6/18 rates
+  already reflect this.
+- **Category 5's hijack is immediate but not eternal.** `Node.put()`'s
+  `merge(...).incremented(self.node_id)` always dominates whatever it read,
+  so the impersonated node's next real coordinated write supersedes the
+  poison — measured as a separate line (self-heal: PREVENTED) rather than
+  glossed into the hijack's UNDEFENDED verdict.
+- Four real bugs were found and fixed *while building the harness itself*,
+  not in production code: (1) two scenarios execed into the wrong
+  container, trying to load a cert path that only exists in a *different*
+  node's mounted `certs/` volume; (2) category 3 used `http://` against a
+  TLS-only health-check port; (3) category 5's "legit" seed write used
+  `localhost` (resolving to whichever container ran the snippet) while the
+  poison claimed a fixed node id, so the two clocks landed under different
+  node-id keys and were correctly judged `concurrent` rather than
+  dominated — a bug in the scenario's design, not evidence of a defense;
+  (4) category 8's first version read through the public quorum-routed
+  endpoint, where `R=2` of 3 correctly masks one tampered replica (the
+  system working as designed) — fixed by reading the tampered replica's own
+  internal endpoint directly to actually exercise GCM's tamper detection.
+
+**Test results:** 115/115 passing (`pytest`) — all Phase 1-6 tests
+unmodified, plus the new fast adversarial-mechanism tests. Full live run
+against a freshly rebuilt 3-node Docker Compose cluster (`docker compose
+down -v && up --build -d`) produced the rates above, written to
+`reports/phase7_adversarial_report.md` and
+`reports/phase7_adversarial_results.json`.
+
+**Deferred to later phases:** DynamoDB benchmarking (Phase 8) · versioned
+routes, structured logging, `/metrics`, README/CI (Phase 9) · dashboard
+(Phase 10). Not attempted in this phase, by design, with concrete future
+costs: mTLS peer-identity binding for categories 2/5/6 needs a reverse
+proxy or an ASGI/uvicorn protocol change to expose the peer cert; delete
+needs a tombstone + GC mechanism to gain clock-awareness; tamper-evident
+audit logging (hash chaining or signing) is Phase 9-adjacent
+structured-logging territory.

@@ -49,6 +49,16 @@ def default_audit_log_path() -> str:
     return str(Path(config.DB_PATH).parent / f"{config.NODE_ID}.audit.log")
 
 
+def default_internal_audit_log_path() -> str:
+    """Separate file from the public audit log -- internal (node-to-node)
+    traffic and public (client-facing) traffic are different trust domains,
+    worth being able to inspect independently. Phase 7's taxonomy category
+    10a: before this, create_internal_app() attached no audit middleware at
+    all, so every internal-port attack (forged gossip/hints/clock/delete)
+    left zero record anywhere -- not a design limitation, a wiring gap."""
+    return str(Path(config.DB_PATH).parent / f"{config.NODE_ID}.internal-audit.log")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Starts the gossip background thread only when a real ASGI server
@@ -172,16 +182,25 @@ def create_public_app(node: Node, auth_tokens: Dict[str, dict], audit_log_path: 
     return app
 
 
-def create_internal_app(node: Node, gossip_worker: Optional[GossipWorker]) -> FastAPI:
+def create_internal_app(
+    node: Node, gossip_worker: Optional[GossipWorker], audit_log_path: Optional[str] = None
+) -> FastAPI:
     """Node-to-node app: internal_router only, no token auth at all -- this
     app is only ever served on the mTLS-required internal port, so trust
     comes entirely from the client certificate the transport layer already
     demanded before any request reaches here. Owns the gossip worker's
-    lifespan, since gossip traffic only ever flows over this port."""
+    lifespan, since gossip traffic only ever flows over this port.
+
+    audit_log_path defaults to None (no middleware, matching every existing
+    call site's prior behavior) so nothing breaks that doesn't opt in --
+    run.py's production entrypoint passes default_internal_audit_log_path()
+    explicitly."""
     app = FastAPI(title="dynamokv (internal)", lifespan=lifespan)
     app.state.node = node
     app.state.gossip_worker = gossip_worker
     app.include_router(internal_router)
+    if audit_log_path is not None:
+        add_audit_middleware(app, audit_log_path)
     return app
 
 

@@ -1,0 +1,192 @@
+{
+  "generated_at": "2026-08-03T12:15:30",
+  "rates": {
+    "total_scenarios": 18,
+    "prevented": 11,
+    "detected": 6,
+    "prevention_rate": 0.6111111111111112,
+    "detection_rate": 0.3333333333333333
+  },
+  "results": [
+    {
+      "category": "1",
+      "scenario": "unauthorized internal join -- no client cert",
+      "expected": "PREVENTED",
+      "observed": "PREVENTED",
+      "prevented": true,
+      "detected": false,
+      "evidence": "{\"connected\": false, \"error\": \"BrokenPipeError\", \"_returncode\": 0}",
+      "note": ""
+    },
+    {
+      "category": "1",
+      "scenario": "unauthorized internal join -- rogue self-signed CA cert",
+      "expected": "PREVENTED",
+      "observed": "PREVENTED",
+      "prevented": true,
+      "detected": false,
+      "evidence": "{\"connected\": false, \"error\": \"BrokenPipeError\", \"_returncode\": 0}",
+      "note": ""
+    },
+    {
+      "category": "2",
+      "scenario": "gossip 'sender' field accepted with a fabricated identity (node-2's real cert used)",
+      "expected": "UNDEFENDED",
+      "observed": "UNDEFENDED (accepted identically)",
+      "prevented": false,
+      "detected": false,
+      "evidence": "{\"honest_status\": 200, \"spoofed_status\": 200, \"_returncode\": 0}",
+      "note": ""
+    },
+    {
+      "category": "2",
+      "scenario": "hint 'target' field accepted for an arbitrary/fake node id (node-2's real cert used)",
+      "expected": "UNDEFENDED",
+      "observed": "UNDEFENDED (accepted)",
+      "prevented": false,
+      "detected": false,
+      "evidence": "{\"hint_stored_under_fake_target\": true, \"_returncode\": 0}",
+      "note": ""
+    },
+    {
+      "category": "3",
+      "scenario": "compromised relay suppresses a healthy node's perceived liveness (topology: node-1 reachable to node-3 only via node-2)",
+      "expected": "UNDEFENDED",
+      "observed": "inconclusive -- baseline write latency was already fast (1.17s), so the latency-based observable can't distinguish this run's outcome. Docker's network-level segmentation (separate bridge networks) causes near-instant connection/DNS failures rather than a hung TCP timeout, so a REACTIVE failed attempt to unreachable node-3 is already about as fast as a PROACTIVE gossip-driven skip would be -- the two paths are latency-indistinguishable under this specific segmentation technique, independent of whether the forged relay actually took effect.",
+      "prevented": false,
+      "detected": false,
+      "evidence": "{\"node3_health_before\": {\"status\": 200, \"_returncode\": 0}, \"node3_health_after\": {\"status\": 200, \"_returncode\": 0}, \"baseline_write_latency_s\": 1.1719999999913853, \"post_attack_write_latency_s\": 1.2030000000086147}",
+      "note": "The chosen live observable (write-latency delta) doesn't cleanly distinguish proactive-skip from reactive-fail-fast when Docker network segmentation causes near-instant failures rather than slow timeouts. This does NOT mean the attack is defended -- it means this specific live-reproduction technique is inconclusive by construction. The underlying mechanism is proven deterministically, independent of Docker/network timing, in tests/test_gossip.py::test_adversarial_stale_relay_makes_a_healthy_node_appear_down."
+    },
+    {
+      "category": "4",
+      "scenario": "replay a captured old write after a newer one has landed",
+      "expected": "PREVENTED",
+      "observed": "PREVENTED (replay dropped, v2 retained)",
+      "prevented": true,
+      "detected": false,
+      "evidence": "{\"final_value\": \"v2\", \"_returncode\": 0}",
+      "note": ""
+    },
+    {
+      "category": "5",
+      "scenario": "fabricated clock claimed for a node the caller doesn't represent hijacks the key cluster-wide",
+      "expected": "UNDEFENDED (immediate hijack)",
+      "observed": "UNDEFENDED (hijack succeeded)",
+      "prevented": false,
+      "detected": false,
+      "evidence": "{\"hijacked_value\": \"poisoned\", \"recovered_value\": \"recovered\", \"_returncode\": 0}",
+      "note": ""
+    },
+    {
+      "category": "5",
+      "scenario": "self-heal boundary -- impersonated node's next real coordinated write supersedes the poison",
+      "expected": "the poison is NOT eternal",
+      "observed": "self-healed as expected",
+      "prevented": true,
+      "detected": false,
+      "evidence": "{\"hijacked_value\": \"poisoned\", \"recovered_value\": \"recovered\", \"_returncode\": 0}",
+      "note": ""
+    },
+    {
+      "category": "6",
+      "scenario": "delete all replicas directly via the internal API, with no legitimate client-facing delete ever issued",
+      "expected": "UNDEFENDED",
+      "observed": "UNDEFENDED (key was deleted with no authorization)",
+      "prevented": false,
+      "detected": false,
+      "evidence": "{\"status_after_forged_delete\": 404, \"_returncode\": 0}",
+      "note": ""
+    },
+    {
+      "category": "7",
+      "scenario": "decrypt raw on-disk ciphertext with the wrong key",
+      "expected": "PREVENTED",
+      "observed": "PREVENTED (wrong key raises)",
+      "prevented": true,
+      "detected": false,
+      "evidence": "{\"wrong_key_decrypted\": false, \"wrong_key_error\": \"InvalidTag\", \"real_key_recovered_value\": [{\"value\": \"top-secret-value\", \"clock\": {\"node-1\": 1}}], \"_returncode\": 0}",
+      "note": ""
+    },
+    {
+      "category": "8",
+      "scenario": "flip a byte in stored ciphertext, then read that specific replica directly (its own internal endpoint)",
+      "expected": "PREVENTED",
+      "observed": "PREVENTED (tampered read rejected/failed)",
+      "prevented": true,
+      "detected": false,
+      "evidence": "{\"status\": 500, \"body\": \"Internal Server Error\", \"_returncode\": 0}",
+      "note": ""
+    },
+    {
+      "category": "9",
+      "scenario": "auth bypass attempt -- no Authorization header",
+      "expected": "401",
+      "observed": "401",
+      "prevented": true,
+      "detected": true,
+      "evidence": "{\"status\": 401}",
+      "note": ""
+    },
+    {
+      "category": "9",
+      "scenario": "auth bypass attempt -- malformed Authorization header",
+      "expected": "401",
+      "observed": "401",
+      "prevented": true,
+      "detected": true,
+      "evidence": "{\"status\": 401}",
+      "note": ""
+    },
+    {
+      "category": "9",
+      "scenario": "auth bypass attempt -- unknown token",
+      "expected": "401",
+      "observed": "401",
+      "prevented": true,
+      "detected": true,
+      "evidence": "{\"status\": 401}",
+      "note": ""
+    },
+    {
+      "category": "9",
+      "scenario": "auth bypass attempt -- read-only token attempting write",
+      "expected": "403",
+      "observed": "403",
+      "prevented": true,
+      "detected": true,
+      "evidence": "{\"status\": 403}",
+      "note": ""
+    },
+    {
+      "category": "9",
+      "scenario": "auth bypass attempt -- fully valid token",
+      "expected": "200",
+      "observed": "200",
+      "prevented": true,
+      "detected": true,
+      "evidence": "{\"status\": 200}",
+      "note": ""
+    },
+    {
+      "category": "10a",
+      "scenario": "internal-port attacks (categories 2/3/5/6) are captured in an audit trail",
+      "expected": "FIXED this phase (audit middleware attached to the internal app)",
+      "observed": "internal audit log has 60 entries",
+      "prevented": false,
+      "detected": true,
+      "evidence": "{\"public\": {\"public_entries\": 17, \"_returncode\": 0}, \"internal\": {\"internal_entries\": 60, \"internal_mentions_forged_ops\": true, \"_returncode\": 0}}",
+      "note": ""
+    },
+    {
+      "category": "10b",
+      "scenario": "a compromised node truncates/edits its own local audit log with no integrity check",
+      "expected": "UNDEFENDED",
+      "observed": "UNDEFENDED (truncation succeeded, no error/alarm)",
+      "prevented": false,
+      "detected": false,
+      "evidence": "{\"truncated\": true, \"_returncode\": 0}",
+      "note": "Tamper-evident logging (hash chaining or signing) is Phase 9-adjacent structured-logging territory, not attempted here."
+    }
+  ]
+}

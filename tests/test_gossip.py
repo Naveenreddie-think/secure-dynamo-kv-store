@@ -107,3 +107,32 @@ def test_down_nodes_returns_correct_set():
     state.merge_wire({"node-3": 2})  # node-3 checks back in, node-2 doesn't
 
     assert state.down_nodes(now=clock.now, timeout=10.0) == {"node-2"}
+
+
+def test_adversarial_stale_relay_makes_a_healthy_node_appear_down():
+    """Phase 7 taxonomy category 3's mechanism, proven deterministically:
+    merge_wire only ever adopts a strictly-greater counter and there is no
+    "this node is down" message in the wire protocol at all. A compromised
+    relay that always reports the SAME frozen counter for a target --
+    never propagating its true, advancing counter -- causes the victim's
+    local timestamp for that target to go stale and eventually exceed the
+    failure timeout, even though the target is genuinely healthy and its
+    real counter kept ticking upward the entire time. Demonstrating this
+    live against a real 3-node cluster additionally requires reshaping the
+    topology (the default full mesh incidentally self-heals via random
+    peer selection) -- see scripts/adversarial_testbed.py for that half.
+    """
+    clock = _FakeClock()
+    victim = GossipState("node-1", clock_fn=clock)
+
+    # first contact: the compromised relay reports node-3's counter as 5
+    victim.merge_wire({"node-3": 5})
+
+    real_node3_counter = 5
+    for _ in range(5):
+        clock.advance(2.0)  # one gossip interval
+        real_node3_counter += 1  # node-3 is genuinely alive and ticking
+        victim.merge_wire({"node-3": 5})  # relay withholds the real value
+
+    assert real_node3_counter > 5  # node-3 really did keep advancing the whole time
+    assert victim.believed_down("node-3", clock.now, timeout=6.0) is True

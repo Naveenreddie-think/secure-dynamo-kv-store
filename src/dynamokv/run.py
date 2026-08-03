@@ -30,22 +30,11 @@ from dynamokv.main import (
     create_internal_app,
     create_public_app,
     default_audit_log_path,
+    default_internal_audit_log_path,
 )
+from dynamokv.mtls import build_mtls_client_context
 from dynamokv.node import Node
 from dynamokv.ring import HashRing
-
-
-def _build_mtls_context() -> ssl.SSLContext:
-    """httpx.Client(cert=(...), verify=<str path>) looks correct but silently
-    drops the client certificate: httpx.create_ssl_context()'s string-verify
-    branch returns immediately with `ssl.create_default_context(cafile=...)`,
-    before ever reaching the code that would call ctx.load_cert_chain() for
-    `cert`. Confirmed by tracing its source -- both `cert=` and `verify=<str>`
-    are marked deprecated in favor of exactly this: build the SSLContext
-    yourself and pass it as `verify=<SSLContext>`."""
-    ctx = ssl.create_default_context(cafile=config.TLS_CA_CERT)
-    ctx.load_cert_chain(config.TLS_NODE_CERT, config.TLS_NODE_KEY)
-    return ctx
 
 
 def _build_node() -> Node:
@@ -57,7 +46,10 @@ def _build_node() -> Node:
         for nid in cluster_nodes
         if nid != config.NODE_ID
     }
-    http_client = httpx.Client(timeout=5.0, verify=_build_mtls_context())
+    http_client = httpx.Client(
+        timeout=5.0,
+        verify=build_mtls_client_context(config.TLS_NODE_CERT, config.TLS_NODE_KEY, config.TLS_CA_CERT),
+    )
     gossip_failure_timeout = config.GOSSIP_INTERVAL_SECONDS * config.GOSSIP_FAILURE_TIMEOUT_MULTIPLIER
 
     return Node(
@@ -84,7 +76,7 @@ async def main() -> None:
         auth_tokens=load_auth_tokens(config.AUTH_TOKENS_FILE),
         audit_log_path=default_audit_log_path(),
     )
-    internal_app = create_internal_app(node, gossip_worker)
+    internal_app = create_internal_app(node, gossip_worker, audit_log_path=default_internal_audit_log_path())
 
     public_config = uvicorn.Config(
         public_app,
