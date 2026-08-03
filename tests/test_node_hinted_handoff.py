@@ -46,7 +46,7 @@ def test_reactive_hint_created_on_correct_holder_not_coordinator():
 
     _kill_nodes(apps, [down_id])
 
-    resp = clients[coordinator_id].put(f"/keys/{key}", json={"value": "bar"})
+    resp = clients[coordinator_id].put(f"/v1/keys/{key}", json={"value": "bar"})
     assert resp.status_code == 200  # W=2 met by the other two live prefs members
 
     # the hint landed on the hint-holder's own store, not the coordinator's
@@ -76,7 +76,7 @@ def test_proactively_presumed_down_replica_skips_live_attempt():
     coordinator_node._gossip_state.merge_wire({presumed_down_id: 1})
     clock.advance(coordinator_node._gossip_failure_timeout + 1.0)
 
-    resp = clients[coordinator_id].put(f"/keys/{key}", json={"value": "bar"})
+    resp = clients[coordinator_id].put(f"/v1/keys/{key}", json={"value": "bar"})
     assert resp.status_code == 200
 
     assert apps[presumed_down_id].state.node.exists_local(key) is False
@@ -97,7 +97,7 @@ def test_hint_flushes_only_after_gossip_detects_recovery():
     _give_fake_clock(holder_node, clock)
 
     _kill_nodes(apps, [down_id])
-    resp = clients[coordinator_id].put(f"/keys/{key}", json={"value": "bar"})
+    resp = clients[coordinator_id].put(f"/v1/keys/{key}", json={"value": "bar"})
     assert resp.status_code == 200
     assert holder_node._hint_store.has_pending(down_id) is True
 
@@ -128,7 +128,7 @@ def test_no_hint_holder_available_in_a_cluster_with_no_spare_node():
     apps, clients = _build_cluster(node_ids, n=3, r=2, w=2)
     _kill_nodes(apps, ["node-3"])
 
-    resp = clients["node-1"].put("/keys/foo", json={"value": "bar"})
+    resp = clients["node-1"].put("/v1/keys/foo", json={"value": "bar"})
     assert resp.status_code == 200  # W=2 still met by node-1 + node-2, no crash
 
     assert apps["node-1"].state.node.exists_local("foo") is True

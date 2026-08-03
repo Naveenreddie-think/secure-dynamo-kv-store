@@ -1,6 +1,6 @@
 """Production entrypoint: `python -m dynamokv.run`.
 
-Runs two independent uvicorn.Server instances concurrently in one process:
+Runs three independent uvicorn.Server instances concurrently in one process:
 - the public app (config.PORT) -- client-facing, server-only TLS, no client
   certificate required, token auth + audit logging via create_public_app().
 - the internal app (config.INTERNAL_PORT) -- node-to-node only, mTLS
@@ -8,6 +8,11 @@ Runs two independent uvicorn.Server instances concurrently in one process:
   published to the Docker host in docker-compose.yml so it's unreachable
   from outside the compose network by construction, not just by the
   handshake.
+- the metrics app (config.METRICS_PORT) -- plain HTTP, no TLS/auth at all,
+  also never published to the Docker host -- same "unreachable by
+  construction" pattern as the internal port, chosen over mounting
+  /metrics on the public app so a Prometheus scraper never needs a
+  per-request token or a cluster client certificate.
 
 Node's own outbound httpx.Client is built here with the node's client
 certificate and the CA bundle, so every internal call it makes (replica
@@ -32,6 +37,7 @@ from dynamokv.main import (
     default_audit_log_path,
     default_internal_audit_log_path,
 )
+from dynamokv.metrics import create_metrics_app
 from dynamokv.mtls import build_mtls_client_context
 from dynamokv.node import Node
 from dynamokv.ring import HashRing
@@ -77,6 +83,7 @@ async def main() -> None:
         audit_log_path=default_audit_log_path(),
     )
     internal_app = create_internal_app(node, gossip_worker, audit_log_path=default_internal_audit_log_path())
+    metrics_app = create_metrics_app(node)
 
     public_config = uvicorn.Config(
         public_app,
@@ -95,10 +102,16 @@ async def main() -> None:
         ssl_ca_certs=config.TLS_CA_CERT,
         ssl_cert_reqs=ssl.CERT_REQUIRED,
     )
+    metrics_config = uvicorn.Config(
+        metrics_app,
+        host="0.0.0.0",
+        port=config.METRICS_PORT,
+    )
 
     await asyncio.gather(
         uvicorn.Server(public_config).serve(),
         uvicorn.Server(internal_config).serve(),
+        uvicorn.Server(metrics_config).serve(),
     )
 
 

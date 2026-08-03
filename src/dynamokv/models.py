@@ -51,3 +51,7 @@ class InternalHintRequest(BaseModel):
     target: str
     value: Any
     clock: Dict[str, int]
+
+
+class InternalHintResponse(BaseModel):
+    status: str

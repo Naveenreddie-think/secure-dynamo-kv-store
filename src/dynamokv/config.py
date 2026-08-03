@@ -46,3 +46,9 @@ TLS_NODE_KEY = os.environ.get("TLS_NODE_KEY", "certs/node/node.key")
 # granted per-namespace permissions. No default/bypass token -- an
 # unrecognized or missing token is always denied.
 AUTH_TOKENS_FILE = os.environ.get("AUTH_TOKENS_FILE", "")
+
+# /metrics: served on its own plain-HTTP port, deliberately never listed in
+# docker-compose.yml's ports: -- unreachable from outside the compose
+# network by construction, the same pattern INTERNAL_PORT already uses.
+# No TLS/auth needed here since the network boundary itself is the control.
+METRICS_PORT = int(os.environ.get("METRICS_PORT", "9090"))

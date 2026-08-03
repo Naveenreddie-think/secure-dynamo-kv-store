@@ -7,6 +7,7 @@ from dynamokv.models import (
     GossipResponse,
     HealthResponse,
     InternalHintRequest,
+    InternalHintResponse,
     InternalPutRequest,
     InternalVersionsResponse,
     KeyValueResponse,
@@ -16,14 +17,21 @@ from dynamokv.models import (
 from dynamokv.node import Node
 from dynamokv.vector_clock import VectorClock, Version
 
-# Two routers instead of one, matching the two trust domains this cluster
-# now has: public_router is client-facing, gated by token auth, and served
-# over a TLS port that never requires a client certificate. internal_router
-# is node-to-node only, gated by mTLS at the transport layer instead (a
-# separate port, requiring a certificate signed by the cluster CA) -- never
-# by tokens. create_app() still includes both on one app for tests; the
-# production entrypoint (run.py) serves them on two separate ports/apps.
+# Three routers, matching the three trust/versioning domains this cluster
+# now has: public_router is the versioned (/v1) client-facing data-plane API
+# (token-gated, mounted with prefix="/v1" in main.py so a future /v2 can
+# exist alongside it without touching this file); ops_router is small,
+# deliberately unprefixed operational surface (/healthz, and /metrics lives
+# on its own app/port entirely) -- liveness probes and scrape configs are
+# not written against a business-API version and shouldn't need bumping
+# when /v1 becomes /v2 someday. internal_router is node-to-node only, gated
+# by mTLS at the transport layer instead (a separate port, requiring a
+# certificate signed by the cluster CA) -- never by tokens, and never
+# versioned, since it's a private wire protocol, not a public contract.
+# create_app() includes all three on one app for tests; the production
+# entrypoint (run.py) serves them across separate ports/apps.
 public_router = APIRouter()
+ops_router = APIRouter()
 internal_router = APIRouter()
 
 
@@ -64,7 +72,7 @@ def delete_key(
     return DeleteResponse(key=key, deleted=True)
 
 
-@public_router.get("/healthz", response_model=HealthResponse)
+@ops_router.get("/healthz", response_model=HealthResponse)
 def healthz(node: Node = Depends(get_node)) -> HealthResponse:
     return HealthResponse(node_id=node.node_id, status="ok")
 
@@ -113,8 +121,8 @@ def gossip(body: GossipRequest, node: Node = Depends(get_node)) -> GossipRespons
     return GossipResponse(table=table)
 
 
-@internal_router.put("/internal/hints/{key}", include_in_schema=False)
-def put_hint(key: str, body: InternalHintRequest, node: Node = Depends(get_node)) -> dict:
+@internal_router.put("/internal/hints/{key}", response_model=InternalHintResponse, include_in_schema=False)
+def put_hint(key: str, body: InternalHintRequest, node: Node = Depends(get_node)) -> InternalHintResponse:
     version = Version(value=body.value, clock=VectorClock(body.clock))
     node.add_hint(body.target, key, version)
-    return {"status": "ok"}
+    return InternalHintResponse(status="ok")

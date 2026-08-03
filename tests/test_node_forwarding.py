@@ -45,12 +45,12 @@ def test_put_forwards_to_owning_peer():
 
     coordinator.put("some-key", "bar")
 
-    assert peer_client.get("/keys/some-key").json()["value"] == "bar"
+    assert peer_client.get("/v1/keys/some-key").json()["value"] == "bar"
 
 
 def test_get_forwards_to_owning_peer():
     coordinator, peer_client, owner = _coordinator_for("some-key")
-    peer_client.put("/keys/some-key", json={"value": "bar"})
+    peer_client.put("/v1/keys/some-key", json={"value": "bar"})
 
     assert coordinator.get("some-key").value == "bar"
 
@@ -65,10 +65,10 @@ def test_get_missing_forwarded_key_raises_404():
 
 def test_delete_forwards_to_owning_peer():
     coordinator, peer_client, owner = _coordinator_for("some-key")
-    peer_client.put("/keys/some-key", json={"value": "bar"})
+    peer_client.put("/v1/keys/some-key", json={"value": "bar"})
 
     assert coordinator.delete("some-key") is True
-    assert peer_client.get("/keys/some-key").status_code == 404
+    assert peer_client.get("/v1/keys/some-key").status_code == 404
 
 
 def test_delete_missing_forwarded_key_returns_false():

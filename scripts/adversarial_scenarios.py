@@ -18,9 +18,9 @@ credentials, which is exactly what `docker compose exec node-X` gives you
 import json
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -235,7 +235,7 @@ def _write_time_public_put(node_id: str, port: int, key: str, token: str) -> flo
             f"""
 import httpx, ssl
 c = ssl.create_default_context(cafile="/app/certs/ca.crt"); c.check_hostname = False; c.verify_mode = ssl.CERT_NONE
-httpx.put("https://localhost:8000/keys/{key}", json={{"value": "probe"}},
+httpx.put("https://localhost:8000/v1/keys/{key}", json={{"value": "probe"}},
           headers={{"Authorization": "Bearer {token}"}}, verify=c, timeout=15.0)
 """,
         ],
@@ -363,16 +363,16 @@ import json, ssl, httpx
 pub = ssl.create_default_context(cafile="/app/certs/ca.crt"); pub.check_hostname = False; pub.verify_mode = ssl.CERT_NONE
 pub_client = httpx.Client(verify=pub, timeout=10.0, headers={{"Authorization": "Bearer {token}"}})
 
-r1 = pub_client.put("https://localhost:8000/keys/{key}", json={{"value": "v1"}})
+r1 = pub_client.put("https://localhost:8000/v1/keys/{key}", json={{"value": "v1"}})
 clock1 = r1.json()["clock"]
-pub_client.put("https://localhost:8000/keys/{key}", json={{"value": "v2"}})
+pub_client.put("https://localhost:8000/v1/keys/{key}", json={{"value": "v2"}})
 
 internal = ssl.create_default_context(cafile="/app/certs/ca.crt")
 internal.load_cert_chain("/app/certs/node/node-1.crt", "/app/certs/node/node-1.key")
 internal_client = httpx.Client(verify=internal, timeout=5.0)
 internal_client.put("https://node-1:8443/internal/keys/{key}", json={{"value": "v1", "clock": clock1}})
 
-final = pub_client.get("https://localhost:8000/keys/{key}")
+final = pub_client.get("https://localhost:8000/v1/keys/{key}")
 print(json.dumps({{"final_value": final.json()["value"]}}))
 """
     out = exec_snippet("node-1", snippet)
@@ -408,7 +408,7 @@ pub_client = httpx.Client(verify=pub, timeout=10.0, headers={{"Authorization": "
 # to run from) -- the poison below claims to be node-1's write, so the
 # clock it needs to dominate must actually BE node-1's, or the two are
 # merely concurrent (a 409 conflict) rather than a clean, provable hijack.
-pub_client.put("https://node-1:8000/keys/{key}", json={{"value": "legit"}})
+pub_client.put("https://node-1:8000/v1/keys/{key}", json={{"value": "legit"}})
 
 internal = ssl.create_default_context(cafile="/app/certs/ca.crt")
 internal.load_cert_chain("/app/certs/node/node-2.crt", "/app/certs/node/node-2.key")
@@ -417,10 +417,10 @@ for node in ["node-1", "node-2", "node-3"]:
     internal_client.put(f"https://{{node}}:8443/internal/keys/{key}",
                          json={{"value": "poisoned", "clock": {{"node-1": 999999}}}})
 
-hijacked = pub_client.get("https://node-1:8000/keys/{key}").json()["value"]
+hijacked = pub_client.get("https://node-1:8000/v1/keys/{key}").json()["value"]
 
-recovered_resp = pub_client.put("https://node-1:8000/keys/{key}", json={{"value": "recovered"}})
-recovered = pub_client.get("https://node-1:8000/keys/{key}").json()["value"]
+recovered_resp = pub_client.put("https://node-1:8000/v1/keys/{key}", json={{"value": "recovered"}})
+recovered = pub_client.get("https://node-1:8000/v1/keys/{key}").json()["value"]
 
 print(json.dumps({{"hijacked_value": hijacked, "recovered_value": recovered}}))
 """
@@ -467,7 +467,7 @@ def scenario_6_unauthorized_delete(ctx: Context) -> List[Result]:
 import json, ssl, httpx
 pub = ssl.create_default_context(cafile="/app/certs/ca.crt"); pub.check_hostname = False; pub.verify_mode = ssl.CERT_NONE
 pub_client = httpx.Client(verify=pub, timeout=10.0, headers={{"Authorization": "Bearer {token}"}})
-pub_client.put("https://localhost:8000/keys/{key}", json={{"value": "bar"}})
+pub_client.put("https://localhost:8000/v1/keys/{key}", json={{"value": "bar"}})
 
 internal = ssl.create_default_context(cafile="/app/certs/ca.crt")
 internal.load_cert_chain("/app/certs/node/node-2.crt", "/app/certs/node/node-2.key")
@@ -475,7 +475,7 @@ internal_client = httpx.Client(verify=internal, timeout=5.0)
 for node in ["node-1", "node-2", "node-3"]:
     internal_client.delete(f"https://{{node}}:8443/internal/keys/{key}")
 
-after = pub_client.get("https://localhost:8000/keys/{key}")
+after = pub_client.get("https://localhost:8000/v1/keys/{key}")
 print(json.dumps({{"status_after_forged_delete": after.status_code}}))
 """
     # Run FROM node-2's own container, matching category 5's fix -- see note there.
@@ -506,7 +506,7 @@ def scenario_7_read_without_key(ctx: Context) -> List[Result]:
     seed_snippet = f"""
 import json, ssl, httpx
 pub = ssl.create_default_context(cafile="/app/certs/ca.crt"); pub.check_hostname = False; pub.verify_mode = ssl.CERT_NONE
-httpx.put("https://localhost:8000/keys/{key}", json={{"value": "top-secret-value"}},
+httpx.put("https://localhost:8000/v1/keys/{key}", json={{"value": "top-secret-value"}},
           headers={{"Authorization": "Bearer {token}"}}, verify=pub, timeout=10.0)
 print(json.dumps({{"seeded": True}}))
 """
@@ -568,7 +568,7 @@ def scenario_8_ciphertext_tampering(ctx: Context) -> List[Result]:
     seed_snippet = f"""
 import json, ssl, httpx
 pub = ssl.create_default_context(cafile="/app/certs/ca.crt"); pub.check_hostname = False; pub.verify_mode = ssl.CERT_NONE
-httpx.put("https://localhost:8000/keys/{key}", json={{"value": "tamper-me"}},
+httpx.put("https://localhost:8000/v1/keys/{key}", json={{"value": "tamper-me"}},
           headers={{"Authorization": "Bearer {token}"}}, verify=pub, timeout=10.0)
 print(json.dumps({{"seeded": True}}))
 """
@@ -634,9 +634,9 @@ except Exception as e:
 
 
 def scenario_9_auth_bypass(ctx: Context) -> List[Result]:
-    import httpx as _httpx  # noqa: local import so the harness itself doesn't require it at module import time if unused elsewhere
+    import httpx as _httpx  # local import: keeps this scenario's own httpx.Client usage scoped to where it's needed
 
-    url = f"{ctx.public_url('node-1')}/keys/auth-probe-key"
+    url = f"{ctx.public_url('node-1')}/v1/keys/auth-probe-key"
     client = _httpx.Client(verify=False, timeout=10.0)
     results = []
 
@@ -694,7 +694,7 @@ def scenario_10_audit_blind_spot(ctx: Context) -> List[Result]:
     )
     check_internal = exec_snippet(
         "node-1",
-        'import json,os; p="data/node-1.internal-audit.log"; content = open(p).read() if os.path.exists(p) else ""; print(json.dumps({"internal_entries": content.count(chr(10)), "internal_mentions_forged_ops": ("internal/keys" in content) or ("internal/hints" in content) or ("internal/gossip" in content)}))',
+        'import json,os; p="data/node-1.internal-audit.log"; content = open(p).read() if os.path.exists(p) else ""; print(json.dumps({"internal_entries": content.count(chr(10)), "internal_mentions_forged_ops": ("internal/keys" in content) or ("internal/hints" in content) or ("internal/gossip" in content)}))',  # noqa: E501
     )
     has_internal_trail = check_internal.get("internal_entries", 0) > 0
     results.append(

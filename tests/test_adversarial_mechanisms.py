@@ -20,9 +20,9 @@ def test_replay_of_old_write_is_dropped_by_reconcile():
     node_ids = ["node-1", "node-2", "node-3"]
     apps, clients = _build_cluster(node_ids, n=3, r=2, w=2)
 
-    resp1 = clients["node-1"].put("/keys/foo", json={"value": "v1"})
+    resp1 = clients["node-1"].put("/v1/keys/foo", json={"value": "v1"})
     clock1 = resp1.json()["clock"]
-    clients["node-1"].put("/keys/foo", json={"value": "v2"})
+    clients["node-1"].put("/v1/keys/foo", json={"value": "v2"})
 
     # attacker replays the captured OLD write directly at a replica's
     # internal primitive -- no client-facing route needed to attempt this
@@ -41,13 +41,13 @@ def test_clock_forgery_hijacks_the_key_immediately():
     node_ids = ["node-1", "node-2", "node-3"]
     apps, clients = _build_cluster(node_ids, n=3, r=2, w=2)
 
-    clients["node-1"].put("/keys/foo", json={"value": "legit"})
+    clients["node-1"].put("/v1/keys/foo", json={"value": "legit"})
 
     poison = Version(value="poisoned", clock=VectorClock({"node-1": 999999}))
     for nid in node_ids:
         apps[nid].state.node.put_local("foo", poison)
 
-    resp = clients["node-2"].get("/keys/foo")
+    resp = clients["node-2"].get("/v1/keys/foo")
     assert resp.status_code == 200
     assert resp.json()["value"] == "poisoned"
 
@@ -61,15 +61,15 @@ def test_clock_forgery_self_heals_on_next_real_write_by_impersonated_node():
     node_ids = ["node-1", "node-2", "node-3"]
     apps, clients = _build_cluster(node_ids, n=3, r=2, w=2)
 
-    clients["node-1"].put("/keys/foo", json={"value": "legit"})
+    clients["node-1"].put("/v1/keys/foo", json={"value": "legit"})
     poison = Version(value="poisoned", clock=VectorClock({"node-1": 999999}))
     for nid in node_ids:
         apps[nid].state.node.put_local("foo", poison)
 
-    resp = clients["node-1"].put("/keys/foo", json={"value": "recovered"})
+    resp = clients["node-1"].put("/v1/keys/foo", json={"value": "recovered"})
     assert resp.status_code == 200
 
-    final = clients["node-1"].get("/keys/foo")
+    final = clients["node-1"].get("/v1/keys/foo")
     assert final.status_code == 200
     assert final.json()["value"] == "recovered"
 
@@ -80,13 +80,13 @@ def test_delete_local_is_unconditional_regardless_of_clock():
     node_ids = ["node-1", "node-2", "node-3"]
     apps, clients = _build_cluster(node_ids, n=3, r=2, w=2)
 
-    clients["node-1"].put("/keys/foo", json={"value": "bar"})
+    clients["node-1"].put("/v1/keys/foo", json={"value": "bar"})
 
     for nid in node_ids:
         deleted = apps[nid].state.node.delete_local("foo")
         assert deleted is True
 
-    resp = clients["node-1"].get("/keys/foo")
+    resp = clients["node-1"].get("/v1/keys/foo")
     assert resp.status_code == 404
 
 

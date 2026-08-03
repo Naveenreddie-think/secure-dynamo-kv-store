@@ -628,3 +628,142 @@ proxy or an ASGI/uvicorn protocol change to expose the peer cert; delete
 needs a tombstone + GC mechanism to gain clock-awareness; tamper-evident
 audit logging (hash chaining or signing) is Phase 9-adjacent
 structured-logging territory.
+
+## Phase 9 — Engineering polish (done)
+
+Read through the actual code before planning anything, and found several
+of PLAN.md's eight asks were already substantially done as an incidental
+byproduct of earlier phases, not net-new work: `config.py` was already
+100% env-var-driven with zero hardcoded values, and `models.py` already
+had a Pydantic model for every route's request/response with 409/503
+already raised correctly (Phase 3/4). What was genuinely new: route
+versioning, structured operational logging (distinct from Phase 6/7's
+security-focused audit log), a `/metrics` endpoint, GitHub Actions CI, and
+a README — the last two didn't exist in the repo at all before this phase.
+
+**What was built:**
+- `api/routes.py` — `public_router` split into two: a data-plane router
+  (`/keys/*`) and a small new `ops_router` for `/healthz`. Necessary
+  because FastAPI's `include_router(prefix=...)` prefixes every route on
+  that router with no per-route override, and `/healthz` needed to stay
+  unversioned while `/keys/*` moved under `/v1`. `internal_router` is
+  completely untouched — it's a private node-to-node wire protocol
+  (`include_in_schema=False`, mTLS-gated), not a public contract, and
+  `Node`'s own peer HTTP calls build `/internal/...` paths directly.
+  Also fixed the one real gap `models.py` had: `put_hint` returned a bare
+  `dict` with no `response_model` — added `InternalHintResponse`.
+- `main.py` — `public_router` now mounted with `prefix="/v1"` on all three
+  app constructors (`create_app`, `create_public_app`); `ops_router`
+  mounted unprefixed alongside it.
+- `logging_middleware.py` (new) — `RequestLogMiddleware`: structured JSON
+  Lines to **stdout** via `logging.getLogger("dynamokv.access")`, capturing
+  node_id/method/path/latency_ms/status_code/outcome for every request on
+  every app, including high-frequency internal gossip/hint traffic the
+  audit log was never designed to absorb. Deliberately separate from
+  `AuditLogMiddleware` — audit is security-focused (client_id, source IP,
+  allowed/denied, written to a per-node file for compliance-style
+  retention, no timing); this is operational (perf-debugging, stdout,
+  12-factor convention, captured by `docker compose logs`). Added *after*
+  `add_audit_middleware()` everywhere both are wired, so reported latency
+  includes the audit write's own cost rather than hiding it.
+- `metrics.py` (new) — Prometheus `/metrics` via `prometheus_client`:
+  `Counter` (requests by method/path/status), `Histogram` (request
+  latency), `Gauge` (cluster membership, read fresh on each scrape from a
+  new `Node.down_peers()`/`Node.peer_ids()` accessor pair — no background
+  updater, no staleness window). Served on its **own dedicated,
+  unpublished port** (`config.METRICS_PORT`, default `9090`) via a third
+  `uvicorn.Server` in `run.py`'s `asyncio.gather(...)` — never listed in
+  `docker-compose.yml`'s `ports:`, the same "unreachable by construction"
+  pattern `INTERNAL_PORT` already uses, so a scraper needs neither a
+  bearer token nor a cluster client certificate.
+- `.github/workflows/ci.yml` (new) — two jobs: `lint-and-test` (required on
+  every push — `ruff check .` + the full pytest suite, zero Docker/AWS/
+  certs needed since every test injects `MemoryStorage`); `docker-smoke`
+  (manual `workflow_dispatch` only, not required to merge — real
+  `gen_certs.py` + `docker compose up` + a versioned-API PUT/GET smoke
+  test). PLAN.md's text says integration tests run "via Docker Compose,"
+  but making that a required merge gate would mean every push needs
+  container startup to succeed — flakier than this project's actual
+  integration coverage (in-process mounted transports).
+- `README.md` (new) — Mermaid architecture diagram (three ports per node:
+  public/internal/metrics), one-command `docker compose up --build` setup,
+  an API reference pointing at FastAPI's auto-generated `/docs` plus a
+  worked `curl` example, and a Design Decisions section distilling the
+  N=3/R=2/W=2 + CAP trade-off reasoning already scattered across this
+  file's earlier phase entries.
+- `tests/test_observability.py` (new) — structured-log field/ordering
+  proofs and `/metrics` content proofs, all fast/in-process.
+
+**Key decisions:**
+- **Clean break on route versioning, no permanent unversioned alias.**
+  15 hardcoded `/keys/...`/`/healthz` calls in `tests/test_api.py` and
+  several more test files, plus the live-system public-port URLs in
+  `scripts/adversarial_scenarios.py` and `scripts/dynamodb_bench_conditions.py`
+  (Phases 7/8), all got mechanically updated to `/v1/keys/...` — internal
+  `/internal/keys/...` calls were left untouched throughout. A "versioned
+  API" that keeps the old surface mounted forever isn't really versioned,
+  and there's no external consumer here to protect.
+- **`/metrics` on its own port, not the public app or the internal mTLS
+  port.** Mounting it on the public app would mean anyone who can reach
+  the client API can also see request counts/latencies/cluster membership;
+  mounting it on the internal port would require a scraper to hold a
+  cluster client certificate, since `ssl_cert_reqs=CERT_REQUIRED` applies
+  to the whole handshake before any routing happens — there's no way to
+  carve out one unauthenticated route on that port. A third plain-HTTP,
+  unpublished port gets the same network-boundary protection as the
+  internal port without either downside.
+- **A real bug found while writing this phase's own tests, not in
+  production logic already covered elsewhere:** `logging_middleware.py`'s
+  first draft gated *both* handler-attachment *and* `logger.setLevel(INFO)`
+  behind the same `if not logger.handlers` check. If anything else ever
+  attached a handler to `"dynamokv.access"` before `RequestLogMiddleware`'s
+  own lazy first-use (which happens on an app's first real request, not at
+  construction — Starlette builds the middleware stack lazily), the level
+  would silently stay at `NOTSET`/root-inherited (`WARNING`), filtering out
+  every structured-log entry before any handler ever saw it. Caught by a
+  test using a directly-attached collector handler, not by inspection —
+  fixed by unconditionally setting level/`propagate` on every call and
+  only guarding the handler-attachment itself.
+- **`caplog` doesn't work for testing this logger, by design.**
+  `RequestLogMiddleware`'s logger sets `propagate = False` deliberately (so
+  structured logs never leak into the root logger/pytest's own capture
+  ecosystem), which also means `caplog` — which relies on root-logger
+  propagation — can't observe it even when told which logger to watch.
+  Tests attach a plain `logging.Handler` directly to the named logger
+  instead.
+- **Route-versioning migration was verified live, not just by grep**: full
+  `docker compose down -v` + `up --build -d` + a complete
+  `scripts/adversarial_testbed.py` run against the new `/v1` paths
+  reproduced the exact known-good Phase 7 baseline (11/18 prevented, 6/18
+  detected) — confirming the chaos layer survives the versioning change
+  unmodified in its own logic, only in its URL strings. (Two anomalies seen
+  on an interim un-reset run — category 5's hijack briefly showing
+  "DEFENDED" and category 8 briefly showing corrupted-data-accepted — were
+  both traced to stale accumulated state in Docker's named volumes from
+  prior harness runs, not the `/v1` migration itself; resolved by the same
+  fresh-restart discipline Phase 7's own final verification already used.)
+- **`ruff` line-length set to 200, not the default 88/120.** This
+  codebase's established style (per `CLAUDE.md`: "explain design decisions
+  in plain language") is long, dense prose comments/docstrings — running
+  `ruff` at a default width first would have meant rewrapping dozens of
+  carefully-written explanatory comments across 20+ files, a large,
+  unrelated-to-content diff for no real readability gain. The two
+  remaining outliers (a 310-char embedded shell snippet and a 206-char
+  report string, both in `scripts/`, both single data strings rather than
+  prose meant to be read at a normal width) got a targeted `# noqa: E501`
+  instead of being force-wrapped.
+
+**Test results:** 132/132 passing (`pytest`) — all 126 pre-Phase-9 tests
+updated only mechanically (URL strings) where the versioning change
+required it, plus 6 new `test_observability.py` cases. `ruff check .`
+clean across the whole tree. Full live verification: `docker compose up
+--build -d` (fresh volumes) + `scripts/adversarial_testbed.py` reproduced
+the Phase 7 baseline exactly under the new `/v1` paths.
+
+**Deferred to later phases:** dashboard (Phase 10). Not attempted in this
+phase, by design: the `docker-smoke` CI job is manual-trigger-only, not a
+required merge gate (see Key decisions); no log rotation/retention policy
+for the new stdout structured logs (12-factor apps typically leave this to
+the container runtime/log driver, not the application); no metrics
+persistence (Prometheus itself, not this app, is where scrape history
+would live if this were ever deployed against a real Prometheus server).

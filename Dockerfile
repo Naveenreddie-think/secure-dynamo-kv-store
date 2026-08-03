@@ -9,5 +9,6 @@ RUN pip install --no-cache-dir .
 
 EXPOSE 8000
 EXPOSE 8443
+EXPOSE 9090
 
 CMD ["python", "-m", "dynamokv.run"]

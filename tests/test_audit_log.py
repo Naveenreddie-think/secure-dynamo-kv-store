@@ -22,7 +22,7 @@ def test_allowed_request_is_logged(tmp_path):
     )
     client = TestClient(app)
 
-    client.put("/keys/orders:1", json={"value": "bar"}, headers={"Authorization": "Bearer tok-orders"})
+    client.put("/v1/keys/orders:1", json={"value": "bar"}, headers={"Authorization": "Bearer tok-orders"})
 
     entries = _read_entries(log_path)
     assert len(entries) == 1
@@ -43,7 +43,7 @@ def test_denied_request_is_logged_without_leaking_the_raw_token(tmp_path):
     )
     client = TestClient(app)
 
-    client.get("/keys/orders:1", headers={"Authorization": "Bearer not-a-real-token"})
+    client.get("/v1/keys/orders:1", headers={"Authorization": "Bearer not-a-real-token"})
 
     entries = _read_entries(log_path)
     assert len(entries) == 1
@@ -62,9 +62,9 @@ def test_both_allowed_and_denied_appear_across_multiple_requests(tmp_path):
     )
     client = TestClient(app)
 
-    client.put("/keys/orders:1", json={"value": "bar"}, headers={"Authorization": "Bearer tok-orders"})
-    client.get("/keys/orders:1")  # no header -> 401
-    client.get("/keys/orders:missing", headers={"Authorization": "Bearer tok-orders"})  # 404
+    client.put("/v1/keys/orders:1", json={"value": "bar"}, headers={"Authorization": "Bearer tok-orders"})
+    client.get("/v1/keys/orders:1")  # no header -> 401
+    client.get("/v1/keys/orders:missing", headers={"Authorization": "Bearer tok-orders"})  # 404
 
     entries = _read_entries(log_path)
     assert len(entries) == 3

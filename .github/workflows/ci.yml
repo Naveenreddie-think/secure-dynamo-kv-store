@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # Required gate: zero Docker, zero AWS, zero certs needed -- every test
+  # fixture already injects MemoryStorage via create_app(storage=...),
+  # which bypasses production_mode entirely (see main.py's create_app
+  # docstring). Deterministic, matches this project's existing in-process
+  # integration-test precedent (test_node_quorum.py etc. use mounted httpx
+  # transports, not real sockets).
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: pytest -v
+
+  # Optional, NOT required to merge: a real docker compose up smoke test.
+  # PLAN.md's Phase 9 asks for integration tests "via Docker Compose," but
+  # making that a required merge gate would mean every push needs cert
+  # generation + container startup to succeed -- flakier than this
+  # project's actual integration coverage. Runs only on manual trigger.
+  docker-smoke:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e .
+      - run: python scripts/gen_certs.py
+      - run: docker compose up --build -d
+      - name: Wait for nodes to become healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sk https://localhost:8001/healthz | grep -q '"status":"ok"'; then
+              echo "node-1 healthy"; break
+            fi
+            sleep 2
+          done
+      - name: Smoke test PUT/GET over the versioned public API
+        run: |
+          AUTH="Authorization: Bearer tok_demo_admin"
+          curl -sk -X PUT https://localhost:8001/v1/keys/ci-smoke-key \
+            -H "$AUTH" -H "Content-Type: application/json" -d '{"value": "hello"}' | tee /dev/stderr | grep -q '"value":"hello"'
+          curl -sk -H "$AUTH" https://localhost:8001/v1/keys/ci-smoke-key | tee /dev/stderr | grep -q '"value":"hello"'
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

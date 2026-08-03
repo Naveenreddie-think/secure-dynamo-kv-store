@@ -5,11 +5,13 @@ from typing import Dict, List, Optional
 from fastapi import FastAPI
 
 from dynamokv import config
-from dynamokv.api.routes import internal_router, public_router
+from dynamokv.api.routes import internal_router, ops_router, public_router
 from dynamokv.audit import add_audit_middleware
 from dynamokv.auth import load_auth_tokens
 from dynamokv.crypto import EncryptedStorage, load_or_create_encryption_key
 from dynamokv.gossip_worker import GossipWorker
+from dynamokv.logging_middleware import add_request_log_middleware
+from dynamokv.metrics import add_metrics_middleware
 from dynamokv.node import Node
 from dynamokv.ring import HashRing
 from dynamokv.storage.base import StorageBackend
@@ -96,14 +98,15 @@ def create_app(
     the same reasoning is why auth stays off and no audit file is written
     unless a test explicitly asks for either.
 
-    Includes both public_router (client-facing, gated by token auth) and
+    Includes public_router (client-facing data-plane, gated by token auth,
+    mounted under /v1), ops_router (unversioned /healthz), and
     internal_router (node-to-node, gated by mTLS at the transport layer
-    instead) on one app -- this is what every existing multi-node test
+    instead) all on one app -- this is what every existing multi-node test
     fixture (test_node_quorum.py etc.) needs, since they wire cross-node
     HTTP forwarding entirely in-process via mounted transports against a
     single combined app. The production entrypoint (run.py) instead builds
-    two separate single-router apps via create_public_app()/
-    create_internal_app() below, served on two separate TLS ports.
+    separate apps via create_public_app()/create_internal_app() below,
+    served on separate ports.
     """
     app = FastAPI(title="dynamokv", lifespan=lifespan)
     production_mode = storage is None
@@ -161,24 +164,31 @@ def create_app(
     app.state.gossip_worker = (
         GossipWorker(node, config.GOSSIP_INTERVAL_SECONDS) if production_mode and peers else None
     )
-    app.include_router(public_router)
+    app.include_router(public_router, prefix="/v1")
+    app.include_router(ops_router)
     app.include_router(internal_router)
     if resolved_audit_log_path is not None:
         add_audit_middleware(app, resolved_audit_log_path)
+    add_request_log_middleware(app)  # after audit middleware -- see logging_middleware.py's docstring
+    add_metrics_middleware(app)
 
     return app
 
 
 def create_public_app(node: Node, auth_tokens: Dict[str, dict], audit_log_path: str) -> FastAPI:
-    """Client-facing app: public_router only, token auth, audit logging.
-    Served on the plain TLS port (no client certificate required) by
-    run.py -- see config.PORT."""
+    """Client-facing app: versioned (/v1) data-plane router plus the small
+    unversioned ops router (/healthz), token auth, audit logging. Served on
+    the plain TLS port (no client certificate required) by run.py -- see
+    config.PORT."""
     app = FastAPI(title="dynamokv (public)")
     app.state.node = node
     app.state.auth_tokens = auth_tokens
     app.state.gossip_worker = None
-    app.include_router(public_router)
+    app.include_router(public_router, prefix="/v1")
+    app.include_router(ops_router)
     add_audit_middleware(app, audit_log_path)
+    add_request_log_middleware(app)  # after audit middleware -- see logging_middleware.py's docstring
+    add_metrics_middleware(app)
     return app
 
 
@@ -201,6 +211,8 @@ def create_internal_app(
     app.include_router(internal_router)
     if audit_log_path is not None:
         add_audit_middleware(app, audit_log_path)
+    add_request_log_middleware(app)  # after audit middleware -- see logging_middleware.py's docstring
+    add_metrics_middleware(app)
     return app
 
 

@@ -1,7 +1,7 @@
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import httpx
 from fastapi import HTTPException
@@ -242,6 +242,24 @@ class Node:
         for peer_id in self._peers:
             if not self._gossip_state.believed_down(peer_id, now, self._gossip_failure_timeout):
                 self._flush_hints_for(peer_id)
+
+    def peer_ids(self) -> Set[str]:
+        """This node's full known peer roster (excluding itself) -- used by
+        the /metrics cluster-membership gauge to know which node_ids to
+        report on at all, alongside down_peers() for which of them are
+        currently believed down."""
+        return set(self._peers)
+
+    def down_peers(self) -> Set[str]:
+        """Peers currently believed down, per gossip -- used by the /metrics
+        cluster-membership gauge. Read-only, computed fresh on each call
+        (no cached/background state to go stale between scrapes)."""
+        now = self._gossip_clock_fn()
+        return {
+            peer_id
+            for peer_id in self._peers
+            if self._gossip_state.believed_down(peer_id, now, self._gossip_failure_timeout)
+        }
 
     # -- public API, used by routes.py
 

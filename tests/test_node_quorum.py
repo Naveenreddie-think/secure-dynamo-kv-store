@@ -75,11 +75,11 @@ def test_all_three_up_write_and_read_succeed_from_any_entry_point():
     node_ids = ["node-1", "node-2", "node-3"]
     apps, clients = _build_cluster(node_ids, n=3, r=2, w=2)
 
-    put_resp = clients["node-1"].put("/keys/foo", json={"value": "bar"})
+    put_resp = clients["node-1"].put("/v1/keys/foo", json={"value": "bar"})
     assert put_resp.status_code == 200
 
     for nid in node_ids:
-        get_resp = clients[nid].get("/keys/foo")
+        get_resp = clients[nid].get("/v1/keys/foo")
         assert get_resp.status_code == 200
         assert get_resp.json()["value"] == "bar"
 
@@ -93,10 +93,10 @@ def test_one_of_three_down_write_and_read_still_succeed():
     apps, clients = _build_cluster(node_ids, n=3, r=2, w=2)
     _kill_nodes(apps, ["node-3"])
 
-    put_resp = clients["node-1"].put("/keys/foo", json={"value": "bar"})
+    put_resp = clients["node-1"].put("/v1/keys/foo", json={"value": "bar"})
     assert put_resp.status_code == 200
 
-    get_resp = clients["node-1"].get("/keys/foo")
+    get_resp = clients["node-1"].get("/v1/keys/foo")
     assert get_resp.status_code == 200
     assert get_resp.json()["value"] == "bar"
 
@@ -111,12 +111,12 @@ def test_two_of_three_down_write_and_read_both_fail_503():
     apps, clients = _build_cluster(node_ids, n=3, r=2, w=2)
     _kill_nodes(apps, ["node-2", "node-3"])
 
-    put_resp = clients["node-1"].put("/keys/foo", json={"value": "bar"})
+    put_resp = clients["node-1"].put("/v1/keys/foo", json={"value": "bar"})
     assert put_resp.status_code == 503
 
     # seed node-1's own local copy directly to isolate the read-quorum check
     apps["node-1"].state.node.put_local("foo", Version(value="bar", clock=VectorClock({"node-1": 1})))
-    get_resp = clients["node-1"].get("/keys/foo")
+    get_resp = clients["node-1"].get("/v1/keys/foo")
     assert get_resp.status_code == 503
 
 
@@ -129,10 +129,10 @@ def test_coordinator_not_in_preference_list_still_works():
     prefs = ring.get_preference_list(key, 3)
     coordinator_id = next(nid for nid in node_ids if nid not in prefs)
 
-    put_resp = clients[coordinator_id].put(f"/keys/{key}", json={"value": "bar"})
+    put_resp = clients[coordinator_id].put(f"/v1/keys/{key}", json={"value": "bar"})
     assert put_resp.status_code == 200
 
-    get_resp = clients[coordinator_id].get(f"/keys/{key}")
+    get_resp = clients[coordinator_id].get(f"/v1/keys/{key}")
     assert get_resp.status_code == 200
     assert get_resp.json()["value"] == "bar"
 

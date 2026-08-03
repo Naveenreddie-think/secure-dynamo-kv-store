@@ -113,7 +113,7 @@ def write_reports(results: list, rates: dict) -> None:
         f"- **Prevention rate** = prevented / total_scenarios = {rates['prevented']}/{rates['total_scenarios']} = {rates['prevention_rate']:.0%}",
         f"- **Detection rate** = detected / total_scenarios = {rates['detected']}/{rates['total_scenarios']} = {rates['detection_rate']:.0%}",
         "",
-        "Prevention and detection are measured independently (a scenario can be either, both, or neither) -- see PROGRESS.md's Phase 7 entry for why a single pass/fail column would understate the picture.",
+        "Prevention and detection are measured independently (a scenario can be either, both, or neither) -- see PROGRESS.md's Phase 7 entry for why a single pass/fail column would understate the picture.",  # noqa: E501
         "",
         "## Results",
         "",

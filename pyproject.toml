@@ -9,11 +9,16 @@ dependencies = [
     "pydantic>=2.9",
     "httpx>=0.27",
     "cryptography>=43",
+    "prometheus-client>=0.21",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3",
+    "ruff>=0.7",
+]
+bench = [
+    "boto3>=1.35",
 ]
 
 [build-system]
@@ -22,3 +27,14 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+# 200, not the default 88/120 -- this codebase's established style (per
+# CLAUDE.md: "explain design decisions in plain language") is long, dense
+# prose comments/docstrings explaining the WHY behind a decision, which
+# genuinely need more room than typical code lines.
+line-length = 200
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]

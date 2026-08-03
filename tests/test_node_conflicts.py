@@ -15,7 +15,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from dynamokv.vector_clock import VectorClock, reconcile
-from tests.test_node_quorum import _RaisingTransport, _build_cluster, _kill_nodes, _peer_url
+from tests.test_node_quorum import _build_cluster, _kill_nodes, _peer_url, _RaisingTransport
 
 
 def _restrict_reachable(apps, node_id, reachable_ids):
@@ -45,11 +45,11 @@ def test_partitioned_concurrent_writes_produce_a_detected_conflict():
     _restrict_reachable(apps, "node-1", ["node-2"])
     _restrict_reachable(apps, "node-5", ["node-4"])
 
-    put_a = clients["node-1"].put("/keys/foo", json={"value": "value-A"})
+    put_a = clients["node-1"].put("/v1/keys/foo", json={"value": "value-A"})
     assert put_a.status_code == 200
     clock_a = VectorClock(put_a.json()["clock"])
 
-    put_b = clients["node-5"].put("/keys/foo", json={"value": "value-B"})
+    put_b = clients["node-5"].put("/v1/keys/foo", json={"value": "value-B"})
     assert put_b.status_code == 200
     clock_b = VectorClock(put_b.json()["clock"])
 

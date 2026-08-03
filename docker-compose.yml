@@ -8,6 +8,7 @@ services:
       CLUSTER_NODES: node-1,node-2,node-3
       PORT: "8000"
       INTERNAL_PORT: "8443"
+      METRICS_PORT: "9090"
       TLS_CA_CERT: /app/certs/ca.crt
       TLS_NODE_CERT: /app/certs/node/node-1.crt
       TLS_NODE_KEY: /app/certs/node/node-1.key
@@ -29,6 +30,7 @@ services:
       CLUSTER_NODES: node-1,node-2,node-3
       PORT: "8000"
       INTERNAL_PORT: "8443"
+      METRICS_PORT: "9090"
       TLS_CA_CERT: /app/certs/ca.crt
       TLS_NODE_CERT: /app/certs/node/node-2.crt
       TLS_NODE_KEY: /app/certs/node/node-2.key
@@ -50,6 +52,7 @@ services:
       CLUSTER_NODES: node-1,node-2,node-3
       PORT: "8000"
       INTERNAL_PORT: "8443"
+      METRICS_PORT: "9090"
       TLS_CA_CERT: /app/certs/ca.crt
       TLS_NODE_CERT: /app/certs/node/node-3.crt
       TLS_NODE_KEY: /app/certs/node/node-3.key

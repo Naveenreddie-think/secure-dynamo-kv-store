@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-03T12:15:30",
+  "generated_at": "2026-08-03T17:01:17",
   "rates": {
     "total_scenarios": 18,
     "prevented": 11,
@@ -52,10 +52,10 @@
       "category": "3",
       "scenario": "compromised relay suppresses a healthy node's perceived liveness (topology: node-1 reachable to node-3 only via node-2)",
       "expected": "UNDEFENDED",
-      "observed": "inconclusive -- baseline write latency was already fast (1.17s), so the latency-based observable can't distinguish this run's outcome. Docker's network-level segmentation (separate bridge networks) causes near-instant connection/DNS failures rather than a hung TCP timeout, so a REACTIVE failed attempt to unreachable node-3 is already about as fast as a PROACTIVE gossip-driven skip would be -- the two paths are latency-indistinguishable under this specific segmentation technique, independent of whether the forged relay actually took effect.",
+      "observed": "inconclusive -- baseline write latency was already fast (1.44s), so the latency-based observable can't distinguish this run's outcome. Docker's network-level segmentation (separate bridge networks) causes near-instant connection/DNS failures rather than a hung TCP timeout, so a REACTIVE failed attempt to unreachable node-3 is already about as fast as a PROACTIVE gossip-driven skip would be -- the two paths are latency-indistinguishable under this specific segmentation technique, independent of whether the forged relay actually took effect.",
       "prevented": false,
       "detected": false,
-      "evidence": "{\"node3_health_before\": {\"status\": 200, \"_returncode\": 0}, \"node3_health_after\": {\"status\": 200, \"_returncode\": 0}, \"baseline_write_latency_s\": 1.1719999999913853, \"post_attack_write_latency_s\": 1.2030000000086147}",
+      "evidence": "{\"node3_health_before\": {\"status\": 200, \"_returncode\": 0}, \"node3_health_after\": {\"status\": 200, \"_returncode\": 0}, \"baseline_write_latency_s\": 1.437000000005355, \"post_attack_write_latency_s\": 1.1089999999967404}",
       "note": "The chosen live observable (write-latency delta) doesn't cleanly distinguish proactive-skip from reactive-fail-fast when Docker network segmentation causes near-instant failures rather than slow timeouts. This does NOT mean the attack is defended -- it means this specific live-reproduction technique is inconclusive by construction. The underlying mechanism is proven deterministically, independent of Docker/network timing, in tests/test_gossip.py::test_adversarial_stale_relay_makes_a_healthy_node_appear_down."
     },
     {
@@ -172,10 +172,10 @@
       "category": "10a",
       "scenario": "internal-port attacks (categories 2/3/5/6) are captured in an audit trail",
       "expected": "FIXED this phase (audit middleware attached to the internal app)",
-      "observed": "internal audit log has 60 entries",
+      "observed": "internal audit log has 38 entries",
       "prevented": false,
       "detected": true,
-      "evidence": "{\"public\": {\"public_entries\": 17, \"_returncode\": 0}, \"internal\": {\"internal_entries\": 60, \"internal_mentions_forged_ops\": true, \"_returncode\": 0}}",
+      "evidence": "{\"public\": {\"public_entries\": 17, \"_returncode\": 0}, \"internal\": {\"internal_entries\": 38, \"internal_mentions_forged_ops\": true, \"_returncode\": 0}}",
       "note": ""
     },
     {
