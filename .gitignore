@@ -8,3 +8,5 @@ data/
 .pytest_cache/
 certs/
 .env
+frontend/node_modules/
+frontend/dist/

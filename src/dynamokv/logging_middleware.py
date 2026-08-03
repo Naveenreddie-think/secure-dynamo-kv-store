@@ -7,7 +7,10 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from dynamokv.recent_ops import record_operation
+
 _LOGGER_NAME = "dynamokv.access"
+_CLIENT_KEY_PREFIX = "/v1/keys/"
 
 
 class _JsonLineFormatter(logging.Formatter):
@@ -72,6 +75,21 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
             "outcome": "ok" if response.status_code < 400 else "error",
         }
         self._logger.info(entry)
+        if request.url.path.startswith(_CLIENT_KEY_PREFIX):
+            # Gated specifically to real client /v1/keys/* traffic -- not
+            # /internal/keys/* (shares the "key" path param, but is replica
+            # fan-out, not a client operation), and not /v1/cluster-state
+            # itself (the dashboard's own polling would otherwise drown
+            # real operations in noise). A 409 here only ever comes from
+            # Node.get() -- Node.put() never raises it -- so "conflict"
+            # only appears on GET entries, which is correct, not a bug.
+            record_operation(
+                {
+                    **entry,
+                    "key": request.path_params.get("key"),
+                    "conflict": response.status_code == 409,
+                }
+            )
         return response
 
 

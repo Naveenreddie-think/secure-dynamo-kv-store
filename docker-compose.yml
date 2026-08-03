@@ -9,6 +9,12 @@ services:
       PORT: "8000"
       INTERNAL_PORT: "8443"
       METRICS_PORT: "9090"
+      # Externally-reachable (host-mapped) URLs -- identical on every node,
+      # since the browser-served dashboard needs the full roster regardless
+      # of which node happens to be serving its bundle. Docker DNS names
+      # (node-1 etc.) don't resolve from a browser at all; only these
+      # host-published ports do.
+      PUBLIC_CLUSTER_URLS: "https://localhost:8001,https://localhost:8002,https://localhost:8003"
       TLS_CA_CERT: /app/certs/ca.crt
       TLS_NODE_CERT: /app/certs/node/node-1.crt
       TLS_NODE_KEY: /app/certs/node/node-1.key
@@ -31,6 +37,12 @@ services:
       PORT: "8000"
       INTERNAL_PORT: "8443"
       METRICS_PORT: "9090"
+      # Externally-reachable (host-mapped) URLs -- identical on every node,
+      # since the browser-served dashboard needs the full roster regardless
+      # of which node happens to be serving its bundle. Docker DNS names
+      # (node-1 etc.) don't resolve from a browser at all; only these
+      # host-published ports do.
+      PUBLIC_CLUSTER_URLS: "https://localhost:8001,https://localhost:8002,https://localhost:8003"
       TLS_CA_CERT: /app/certs/ca.crt
       TLS_NODE_CERT: /app/certs/node/node-2.crt
       TLS_NODE_KEY: /app/certs/node/node-2.key
@@ -53,6 +65,12 @@ services:
       PORT: "8000"
       INTERNAL_PORT: "8443"
       METRICS_PORT: "9090"
+      # Externally-reachable (host-mapped) URLs -- identical on every node,
+      # since the browser-served dashboard needs the full roster regardless
+      # of which node happens to be serving its bundle. Docker DNS names
+      # (node-1 etc.) don't resolve from a browser at all; only these
+      # host-published ports do.
+      PUBLIC_CLUSTER_URLS: "https://localhost:8001,https://localhost:8002,https://localhost:8003"
       TLS_CA_CERT: /app/certs/ca.crt
       TLS_NODE_CERT: /app/certs/node/node-3.crt
       TLS_NODE_KEY: /app/certs/node/node-3.key

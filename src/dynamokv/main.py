@@ -3,6 +3,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from dynamokv import config
 from dynamokv.api.routes import internal_router, ops_router, public_router
@@ -59,6 +61,27 @@ def default_internal_audit_log_path() -> str:
     all, so every internal-port attack (forged gossip/hints/clock/delete)
     left zero record anywhere -- not a design limitation, a wiring gap."""
     return str(Path(config.DB_PATH).parent / f"{config.NODE_ID}.internal-audit.log")
+
+
+def _add_dashboard(app: FastAPI) -> None:
+    """Phase 10: serves the built React dashboard from the same origin as
+    the public API. CORS is added only if DASHBOARD_DEV_CORS_ORIGINS is
+    set (empty by default -- production ships zero CORS surface, since a
+    same-origin bundle needs none; local `npm run dev` against a separate
+    Vite dev server sets it). The StaticFiles mount is guarded on the
+    directory actually existing: FastAPI's StaticFiles raises at
+    construction time if it doesn't, which would otherwise break every
+    test/CI run in a checkout that never ran `npm run build`."""
+    if config.DASHBOARD_DEV_CORS_ORIGINS:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=config.DASHBOARD_DEV_CORS_ORIGINS,
+            allow_credentials=False,
+            allow_methods=["GET"],
+            allow_headers=["*"],
+        )
+    if Path(config.FRONTEND_DIST_DIR).is_dir():
+        app.mount("/dashboard", StaticFiles(directory=config.FRONTEND_DIST_DIR, html=True), name="dashboard")
 
 
 @asynccontextmanager
@@ -171,6 +194,7 @@ def create_app(
         add_audit_middleware(app, resolved_audit_log_path)
     add_request_log_middleware(app)  # after audit middleware -- see logging_middleware.py's docstring
     add_metrics_middleware(app)
+    _add_dashboard(app)
 
     return app
 
@@ -189,6 +213,7 @@ def create_public_app(node: Node, auth_tokens: Dict[str, dict], audit_log_path: 
     add_audit_middleware(app, audit_log_path)
     add_request_log_middleware(app)  # after audit middleware -- see logging_middleware.py's docstring
     add_metrics_middleware(app)
+    _add_dashboard(app)
     return app
 
 

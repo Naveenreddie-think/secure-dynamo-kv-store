@@ -1,6 +1,6 @@
 import bisect
 import hashlib
-from typing import Dict, Iterable, List, Set
+from typing import Dict, Iterable, List, Set, Tuple
 
 
 class HashRing:
@@ -88,3 +88,15 @@ class HashRing:
     @property
     def nodes(self) -> Set[str]:
         return set(self._nodes)
+
+    def sorted_points(self) -> List[Tuple[float, str]]:
+        """Every virtual point as (position, owner), position = hash / 2**64
+        in [0, 1) -- for dashboard ring visualization (Phase 10). Never
+        returns the raw hash int: it's a 64-bit value, which exceeds
+        JavaScript's 53-bit safe-integer range (IEEE754 doubles), so
+        shipping it as a JSON number would silently lose precision in the
+        browser (wrong sort order, apparent duplicates). Dividing by a
+        fixed positive constant is monotonic, so iterating the
+        already-sorted hash list preserves order for free -- no re-sort
+        needed."""
+        return [(h / 2**64, self._ring[h]) for h in self._sorted_hashes]

@@ -250,6 +250,21 @@ class Node:
         currently believed down."""
         return set(self._peers)
 
+    def ring_topology(self) -> List[Dict[str, Any]]:
+        """Every virtual point on this node's ring, as {"position", "owner"}
+        -- for the dashboard's ring visualization (Phase 10). Identical
+        across every node in the cluster (HashRing.add_node derives points
+        purely from node_id + a virtual-node index, and every node shares
+        the same CLUSTER_NODES/VIRTUAL_NODES config), so any one node's
+        answer represents the whole ring."""
+        return [{"position": position, "owner": owner} for position, owner in self._ring.sorted_points()]
+
+    def pending_hints(self) -> Dict[str, int]:
+        """Number of keys this node is currently holding as a hint for each
+        peer -- a live signal of hinted handoff in progress, for the
+        dashboard's health view."""
+        return {peer_id: len(self._hint_store.pending_for(peer_id)) for peer_id in self._peers}
+
     def down_peers(self) -> Set[str]:
         """Peers currently believed down, per gossip -- used by the /metrics
         cluster-membership gauge. Read-only, computed fresh on each call

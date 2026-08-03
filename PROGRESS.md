@@ -767,3 +767,138 @@ for the new stdout structured logs (12-factor apps typically leave this to
 the container runtime/log driver, not the application); no metrics
 persistence (Prometheus itself, not this app, is where scrape history
 would live if this were ever deployed against a real Prometheus server).
+
+## Phase 10 — Live cluster dashboard (done, final phase)
+
+Before writing any frontend code, checked what the dashboard actually
+needed against what already existed: nothing exposed ring topology, no
+HTTP endpoint surfaced Phase 9's `Node.down_peers()`/`peer_ids()` (and
+`/metrics`' Prometheus gauge lives on a port deliberately never published
+to the host — a browser can't reach it, by design), and Phase 9's
+structured logging went to stdout only, never retained or queryable. One
+new endpoint, `GET /v1/cluster-state`, plus a small in-memory buffer,
+closed all three gaps — no WebSocket infrastructure needed, matching
+PLAN.md's own "polling... 1-2s" as the simpler allowed option.
+
+**What was built:**
+- `ring.py` — `HashRing.sorted_points() -> List[Tuple[float, str]]`, each
+  virtual point as `(hash / 2**64, owner)`. Never serializes the raw
+  64-bit hash int: JS numbers are IEEE754 doubles with a 53-bit safe-integer
+  range, so shipping the raw hash would silently lose precision in the
+  browser (wrong sort order, apparent duplicates) — dividing by a fixed
+  constant is monotonic, so the existing sort order carries over for free.
+- `node.py` — two new accessors alongside Phase 9's `down_peers()`/
+  `peer_ids()`: `ring_topology()` (wraps `sorted_points()`) and
+  `pending_hints() -> Dict[str, int]` (per-peer hint-queue depth, a live
+  signal of hinted handoff in progress).
+- `recent_ops.py` (new) — a module-level `collections.deque(maxlen=200)`,
+  guarded by one lock around **both** the append and the read-side
+  snapshot copy. `routes.py`'s handlers are plain `def` (threadpool-
+  dispatched) while `RequestLogMiddleware` appends from the event loop —
+  an unguarded read can raise `RuntimeError: deque mutated during
+  iteration` under real concurrency, not just return stale data.
+- `logging_middleware.py` — `RequestLogMiddleware` gained one gated call to
+  `record_operation()`, filtered to `request.url.path.startswith("/v1/keys/")`
+  specifically (not just "key is not `None`" — `/internal/keys/{key}`
+  shares that path param but is replica fan-out, not a client op).
+  Without the filter, both internal traffic and the dashboard's own
+  polling of `/v1/cluster-state` would drown real operations in noise.
+- `api/routes.py` — `GET /cluster-state` on `public_router` (→
+  `/v1/cluster-state` via the existing prefix), deliberately with **no**
+  `auth: AuthContext` dependency, unlike every other `/v1` route. Returns
+  one node's own-perspective payload: ring topology, its own gossip-derived
+  peer up/down view, pending hint counts, and its own recent-ops feed.
+- `config.py` — `PUBLIC_CLUSTER_URLS` (externally-reachable node addresses,
+  surfaced in the cluster-state response so the same dashboard bundle
+  knows every node to poll regardless of which one served it —
+  `docker-compose.yml`'s existing peer-URL convention is Docker-internal
+  DNS only, invisible to a browser), `FRONTEND_DIST_DIR`,
+  `DASHBOARD_DEV_CORS_ORIGINS` (empty by default — production ships zero
+  CORS surface).
+- `main.py` — `_add_dashboard()`: conditional `CORSMiddleware` (only if
+  `DASHBOARD_DEV_CORS_ORIGINS` is set) and a **guarded** `StaticFiles`
+  mount at `/dashboard` (`if Path(config.FRONTEND_DIST_DIR).is_dir()`) —
+  FastAPI's `StaticFiles` raises at construction if the directory is
+  missing, which would otherwise break every test/CI run in a checkout
+  that never ran `npm run build`.
+- `Dockerfile` — multi-stage: a `node:20-slim` stage runs `npm ci && npm
+  run build`, copied into the existing `python:3.11-slim` final stage,
+  which never gets Node.js installed itself.
+- `frontend/` (new) — Vite + plain React + Tailwind: `src/api.js` polls
+  every node in `PUBLIC_CLUSTER_URLS` in parallel every 1.5s, each fetch
+  wrapped in an `AbortController` with a ~2s timeout (a killed node's
+  origin doesn't fail fast on its own — TCP/TLS connect timeouts run
+  20-30s+ — so without an explicit deadline, requests to a dead node pile
+  up across poll cycles); `RingVisualization.jsx` (SVG, one tick per
+  virtual point); `HealthMatrix.jsx` (reporting-node × peer grid, not one
+  boolean per node — gossip is eventually consistent, so a real partition
+  showing up as *disagreement* between nodes is the honest, correct
+  behavior, not a bug to hide); `OperationLog.jsx` (merged, sorted by
+  timestamp, 409/conflict rows highlighted); `ChaosPanel.jsx` (advisory
+  only — shows the exact `docker compose stop/start` command, no fetch
+  calls at all).
+
+**Key decisions (all three confirmed with the user up front):**
+- **Chaos panel is advisory-only**, not a real control endpoint. A browser
+  can't run Docker commands itself, so "real" execution would mean a new
+  network-reachable endpoint that can stop cluster nodes or reshape the
+  network — meaningful new attack surface for a security-focused project
+  to take on for a dashboard button. The panel just shows the command;
+  the ring/health/log views update live once you run it yourself.
+- **`/v1/cluster-state` is unauthenticated.** Requiring the same bearer
+  token as `/v1/keys` would mean embedding a real token in client-side JS,
+  visible to anyone who opens dev tools — a false sense of security, not a
+  real one. It never returns values or raw tokens, but `recent_ops` does
+  include key names (the same extraction `audit.py` already does) — a
+  genuinely new, if minor, disclosure to an unauthenticated caller, named
+  explicitly in the route's docstring rather than left implicit.
+- **Dashboard bundled into the existing public app**, not a new
+  docker-compose service/port — matches this project's one-command
+  `docker compose up --build` setup story; no new container, no new
+  published port.
+- **Client-side merge across all N nodes, not server-side aggregation.**
+  Each client operation is coordinated and logged by exactly one node
+  (`create_public_app()` never mounts `internal_router`), so merging needs
+  no de-duplication. More importantly: if one node aggregated on the
+  others' behalf, killing *that* node via the chaos panel would blind the
+  whole dashboard — polling all N directly means killing any single node
+  only ever removes that one node's row from the health matrix.
+- **A real design gap caught only during validation, not in the original
+  draft:** every existing peer-URL construction (`main.py`, `run.py`) uses
+  Docker Compose's internal service-name DNS (`http://node-1:8000`), which
+  a browser cannot resolve at all — it can only reach the host-mapped
+  ports. Without `PUBLIC_CLUSTER_URLS`, the frontend would have had no way
+  to discover the other two nodes' addresses at all.
+
+**Test results:** 140/140 passing (`pytest`) — all 132 pre-Phase-10 tests
+unmodified, plus 8 new `test_cluster_state.py` cases (including one that
+required a test-only `recent_ops.clear()` reset fixture once discovered
+that the recorded-ops buffer, correctly a process-global singleton in
+production, was leaking entries between tests running in the same pytest
+process). `ruff check .` clean. Frontend: `npm run build` succeeds,
+produces correctly `/dashboard/`-prefixed asset URLs; manually confirmed
+`main.py`'s guarded mount both serves the built dashboard correctly *and*
+leaves `create_app()` construction unaffected when `frontend/dist` is
+absent (the fresh-checkout/CI case).
+
+Full live verification against a freshly rebuilt 3-node cluster
+(multi-stage `docker compose up --build -d`): `/dashboard/` serves the
+built SPA and its assets correctly over the public port; `/v1/cluster-state`
+returned all 450 ring points, both peers correctly reported "up"; a real
+`PUT`/`GET` through the token-gated `/v1/keys/dash-test` (plus a
+deliberately-unauthenticated attempt that correctly 401'd) all appeared in
+`recent_ops` — even the rejected attempt, which is honest and useful;
+`docker compose stop node-3` was reflected as `"node-3": "down"` in
+node-1's own `peers` view within a few gossip intervals, with node-1's own
+`/v1/cluster-state` polling uninterrupted throughout.
+
+**Deferred, by design:** real chaos-panel execution (see Key decisions);
+WebSocket push (polling is simpler and sufficient at this scale, per
+PLAN.md's own allowance); frontend automated tests (Playwright/etc. would
+be a genuinely new testing tier for a backend-testing-focused project;
+the backend contract it depends on is fully covered by
+`test_cluster_state.py` instead); clock-skew handling in the merged,
+sorted-by-timestamp operation log (fine on one Docker host sharing the
+host clock; would need addressing if this ever ran across real,
+independently-clocked EC2 instances, per PLAN.md's own optional cloud
+phase). This was PLAN.md's final phase — all ten are now built.

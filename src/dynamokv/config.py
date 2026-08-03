@@ -52,3 +52,28 @@ AUTH_TOKENS_FILE = os.environ.get("AUTH_TOKENS_FILE", "")
 # network by construction, the same pattern INTERNAL_PORT already uses.
 # No TLS/auth needed here since the network boundary itself is the control.
 METRICS_PORT = int(os.environ.get("METRICS_PORT", "9090"))
+
+# Phase 10 dashboard: peer URLs elsewhere in this file (CLUSTER_NODES-based)
+# resolve via Docker Compose's internal service-name DNS, which a browser
+# cannot use at all -- it can only reach the host-mapped ports
+# (docker-compose.yml's published `ports:`). PUBLIC_CLUSTER_URLS is the
+# externally-reachable equivalent (comma-separated, identical on every
+# node), surfaced in the /v1/cluster-state response so the same built
+# dashboard bundle knows every node's address to poll regardless of which
+# node happens to be serving it. Empty by default -- unset in any context
+# that doesn't run behind docker-compose.yml's published ports.
+PUBLIC_CLUSTER_URLS = [u.strip() for u in os.environ.get("PUBLIC_CLUSTER_URLS", "").split(",") if u.strip()]
+
+# Where the built dashboard's static files live, if they exist -- main.py
+# only mounts StaticFiles here when this directory is actually present
+# (npm run build), so a checkout/CI run that never built the frontend
+# doesn't fail at app-construction time.
+FRONTEND_DIST_DIR = os.environ.get("FRONTEND_DIST_DIR", "frontend/dist")
+
+# CORS is OFF by default (empty) -- production serves the dashboard from
+# the same origin as the API (bundled, see FRONTEND_DIST_DIR), which needs
+# no CORS at all. Set only for local `npm run dev` against a separately
+# running Vite dev server, e.g. "http://localhost:5173".
+DASHBOARD_DEV_CORS_ORIGINS = [
+    o.strip() for o in os.environ.get("DASHBOARD_DEV_CORS_ORIGINS", "").split(",") if o.strip()
+]

@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from dynamokv import config
 from dynamokv.auth import AuthContext, get_auth_context
 from dynamokv.models import (
+    ClusterStateResponse,
     DeleteResponse,
     GossipRequest,
     GossipResponse,
@@ -12,9 +14,13 @@ from dynamokv.models import (
     InternalVersionsResponse,
     KeyValueResponse,
     PutRequest,
+    RecentOpOut,
+    RingPointOut,
+    RingTopologyOut,
     VersionOut,
 )
 from dynamokv.node import Node
+from dynamokv.recent_ops import recent_operations
 from dynamokv.vector_clock import VectorClock, Version
 
 # Three routers, matching the three trust/versioning domains this cluster
@@ -70,6 +76,36 @@ def delete_key(
     if not deleted:
         raise HTTPException(status_code=404, detail=f"key '{key}' not found")
     return DeleteResponse(key=key, deleted=True)
+
+
+@public_router.get("/cluster-state", response_model=ClusterStateResponse)
+def cluster_state(node: Node = Depends(get_node)) -> ClusterStateResponse:
+    """Read-only, for the Phase 10 dashboard. Deliberately unauthenticated
+    (no auth dependency, unlike every other /v1 route) -- a live-polling
+    browser dashboard would otherwise need to carry a real bearer token in
+    client-side JS, visible to anyone who opens dev tools, which is a false
+    sense of security rather than a real one. Never returns values or raw
+    tokens -- but recent_ops entries DO include key names, a genuinely new
+    (if minor) disclosure to an unauthenticated caller.
+
+    Returns this node's OWN perspective only -- ring topology is
+    deterministic and identical everywhere, but `peers`/`pending_hints`/
+    `recent_ops` are this node's own gossip view and own request history.
+    The dashboard polls every node in public_cluster_urls and merges
+    client-side; a real partition or gossip lag then shows up honestly as
+    disagreement between nodes rather than being smoothed over.
+    """
+    down = node.down_peers()
+    peers = {peer_id: ("down" if peer_id in down else "up") for peer_id in node.peer_ids()}
+    ring_points = [RingPointOut(**p) for p in node.ring_topology()]
+    return ClusterStateResponse(
+        node_id=node.node_id,
+        public_cluster_urls=config.PUBLIC_CLUSTER_URLS,
+        ring=RingTopologyOut(virtual_nodes=config.VIRTUAL_NODES, points=ring_points),
+        peers=peers,
+        pending_hints=node.pending_hints(),
+        recent_ops=[RecentOpOut(**op) for op in recent_operations()],
+    )
 
 
 @ops_router.get("/healthz", response_model=HealthResponse)
